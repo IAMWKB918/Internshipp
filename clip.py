@@ -14,9 +14,11 @@ from pathlib import Path
 from PIL import Image
 from sentence_transformers import SentenceTransformer, util
 
-reader = easyocr.Reader(['ch_sim', 'en'], gpu=True) # 如果有显卡 gpu=True
+# 初始化 EasyOCR (你原有的代码已经有了，保持不变)
+# gpu=True 如果你的显卡显存够，建议开启；如果不稳可以改 False
+reader = easyocr.Reader(['ch_sim', 'en'], gpu=torch.cuda.is_available()) 
 
-# 初始化
+# 初始化 Flask 和 CLIP
 app = Flask(__name__, static_folder='static')
 TEMP_DIR = Path("pending_pool")
 PREVIEW_DIR = Path("static/previews")
@@ -26,7 +28,23 @@ print("Loading CLIP Model...")
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = SentenceTransformer('clip-ViT-B-32', device=device)
 
-# --- 核心：修复后的帧提取函数 ---
+# --- 修改后的 OCR 函数：使用 EasyOCR ---
+def extract_text_easyocr(image):
+    try:
+        w, h = image.size
+        image = image.resize((w*2, h*2), Image.LANCZOS)
+        
+        img_np = np.array(image.convert('L')) 
+        
+        results = reader.readtext(img_np, detail=0)
+        full_text = " ".join(results).lower()
+        print(f"OCR Result: {full_text}") 
+        return full_text
+    except Exception as e:
+        print(f"EasyOCR Error: {e}")
+        return ""
+
+# --- 核心：修复后的帧提取函数 (完全保持不变) ---
 def extract_video_frames_ffmpeg(video_path, num_frames=6):
     try:
         cmd_duration = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', str(video_path)]
@@ -40,7 +58,6 @@ def extract_video_frames_ffmpeg(video_path, num_frames=6):
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, _ = process.communicate()
             if stdout:
-                # 提取一帧立即存入列表，而不是等循环结束
                 frames.append(Image.open(io.BytesIO(stdout)).convert('RGB'))
         return frames
     except Exception as e:
@@ -108,28 +125,48 @@ def run_tasks():
             
             if not temp_images: continue
             
+            # 1. 跑原始 CLIP 逻辑
             img_embs = model.encode(temp_images, convert_to_tensor=True)
             cos_sims = util.cos_sim(img_embs, text_emb)
             
-            # 找到最像的那一帧
+            # 找到视觉相似度最高的帧
             best_frame_idx = torch.argmax(torch.max(cos_sims, dim=1)[0]).item()
             best_scores_per_prompt, _ = torch.max(cos_sims, dim=0)
             max_val, best_prompt_idx = torch.max(best_scores_per_prompt).item(), torch.argmax(best_scores_per_prompt).item()
 
             target = "Missing"
-            if max_val >= config['threshold']:
+            
+            # --- 2. 使用 EasyOCR 进行文字关键词检索 ---
+            best_image = temp_images[best_frame_idx]
+            detected_text = extract_text_easyocr(best_image)
+            found_by_ocr = False
+            
+            for cat in config['categories']:
+                keywords = cat.get('keywords', [])
+                for kw in keywords:
+                    if kw.lower() in detected_text:
+                        target = cat['name']
+                        max_val = 1.0  # 文字匹配成功，置信度满分
+                        found_by_ocr = True
+                        break
+                if found_by_ocr: break
+
+            # --- 3. 如果文字没匹配到，才走 CLIP 视觉 ---
+            if not found_by_ocr and max_val >= config['threshold']:
                 curr = 0
                 for cat in config['categories']:
                     if curr <= best_prompt_idx < curr + len(cat['prompts']):
                         target = cat['name']; break
                     curr += len(cat['prompts'])
             
-            # 保存预览图 (使用文件名哈希防止冲突)
+            # 保存预览图 (逻辑保持不变)
             import hashlib
             safe_name = hashlib.md5(f_path.name.encode()).hexdigest()
             preview_filename = f"thumb_{safe_name}.jpg"
-            temp_images[best_frame_idx].save(PREVIEW_DIR / preview_filename, "JPEG", quality=70)
+            best_image.save(PREVIEW_DIR / preview_filename, "JPEG", quality=70)
             
+            # 创建文件夹并移动/复制
+            (output_dir / target).mkdir(parents=True, exist_ok=True)
             folder_counts[target] = folder_counts.get(target, 0) + 1
             new_name = f"{target}_({folder_counts[target]}){f_path.suffix}"
             
@@ -142,7 +179,7 @@ def run_tasks():
                 "score": round(max_val, 4),
                 "thumb_url": f"/static/previews/{preview_filename}"
             })
-        except Exception as e: print(f"Error: {e}")
+        except Exception as e: print(f"Error processing {f_path}: {e}")
         finally:
             gc.collect()
             if torch.cuda.is_available(): torch.cuda.empty_cache()
