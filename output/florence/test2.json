@@ -1,0 +1,329 @@
+{
+  "image_information": {
+    "width": 1080,
+    "height": 607,
+    "aspect_ratio": 1.7792,
+    "mode": "RGB",
+    "file_path": "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\input\\test2.jpg"
+  },
+  "captions": {
+    "caption": {
+      "<CAPTION>": "Four people posing for a photo in front of a sign that says NANCE LTD."
+    },
+    "detailed_caption": {
+      "<DETAILED_CAPTION>": "In this image we can see four people standing on the floor. One person is holding an object in his hand. In the background, we can also see a screen with some text on it."
+    },
+    "more_detailed_caption": {
+      "<MORE_DETAILED_CAPTION>": "Four people are standing on a stage in front of a wall that says \"Industrials Sector\" on it. Three of the people are men and one of the women are women. They are all dressed in black suits. The woman is wearing a long black dress. The man in the middle is holding a box. The floor of the stage is dark brown."
+    }
+  },
+  "ocr": {
+    "plain_ocr": {
+      "<OCR>": "CENTURION CLUBINDUSTRIALS SECTORNANCEG LTDR TAX"
+    },
+    "ocr_with_region": {
+      "<OCR_WITH_REGION>": {
+        "quad_boxes": [
+          [
+            522.1799926757812,
+            3.945499897003174,
+            621.5400390625,
+            2.7314999103546143,
+            621.5400390625,
+            16.6924991607666,
+            522.1799926757812,
+            17.9064998626709
+          ],
+          [
+            446.58001708984375,
+            62.824501037597656,
+            686.3400268554688,
+            61.61050033569336,
+            686.3400268554688,
+            84.67649841308594,
+            446.58001708984375,
+            86.49749755859375
+          ],
+          [
+            160.3800048828125,
+            128.3804931640625,
+            309.4200134277344,
+            128.3804931640625,
+            309.4200134277344,
+            194.5435028076172,
+            160.3800048828125,
+            194.5435028076172
+          ],
+          [
+            714.4200439453125,
+            123.52449798583984,
+            1011.4200439453125,
+            123.52449798583984,
+            1011.4200439453125,
+            197.5784912109375,
+            714.4200439453125,
+            197.5784912109375
+          ],
+          [
+            730.6200561523438,
+            241.28250122070312,
+            804.06005859375,
+            241.28250122070312,
+            804.06005859375,
+            263.1344909667969,
+            730.6200561523438,
+            263.1344909667969
+          ]
+        ],
+        "labels": [
+          "</s>CENTURION CLUB",
+          "INDUSTRIALS SECTOR",
+          "NAN",
+          "G LTD",
+          "R TAX"
+        ]
+      }
+    }
+  },
+  "detections": {
+    "objects": {
+      "<OD>": {
+        "bboxes": [
+          [
+            616.1400146484375,
+            180.58250427246094,
+            757.6200561523438,
+            457.98150634765625
+          ],
+          [
+            335.34002685546875,
+            105.31449890136719,
+            374.2200012207031,
+            154.4814910888672
+          ],
+          [
+            454.1400146484375,
+            125.34549713134766,
+            487.6200256347656,
+            173.29849243164062
+          ],
+          [
+            559.9800415039062,
+            114.41950225830078,
+            595.6199951171875,
+            158.12350463867188
+          ],
+          [
+            647.4600219726562,
+            132.62950134277344,
+            677.7000122070312,
+            173.90550231933594
+          ],
+          [
+            609.6600341796875,
+            118.66849517822266,
+            757.6200561523438,
+            508.969482421875
+          ],
+          [
+            278.1000061035156,
+            150.83949279785156,
+            405.5400085449219,
+            477.4054870605469
+          ],
+          [
+            402.3000183105469,
+            174.5124969482422,
+            531.9000244140625,
+            479.83349609375
+          ],
+          [
+            525.4200439453125,
+            161.7655029296875,
+            643.1400146484375,
+            491.9734802246094
+          ],
+          [
+            456.3000183105469,
+            182.40350341796875,
+            476.82000732421875,
+            237.6405029296875
+          ],
+          [
+            348.3000183105469,
+            166.6215057373047,
+            363.4200134277344,
+            209.1114959716797
+          ]
+        ],
+        "labels": [
+          "fancy dress",
+          "human face",
+          "human face",
+          "human face",
+          "human face",
+          "person",
+          "suit",
+          "suit",
+          "suit",
+          "tie",
+          "tie"
+        ]
+      }
+    }
+  },
+  "regions": {
+    "dense_region_caption": {
+      "<DENSE_REGION_CAPTION>": {
+        "bboxes": [
+          [
+            615.0599975585938,
+            180.58250427246094,
+            756.5400390625,
+            457.98150634765625
+          ],
+          [
+            334.260009765625,
+            105.31449890136719,
+            372.0600280761719,
+            154.4814910888672
+          ],
+          [
+            453.0600280761719,
+            125.34549713134766,
+            486.5400085449219,
+            173.29849243164062
+          ],
+          [
+            558.9000244140625,
+            114.41950225830078,
+            594.5400390625,
+            158.73049926757812
+          ],
+          [
+            646.3800048828125,
+            132.62950134277344,
+            676.6200561523438,
+            173.90550231933594
+          ]
+        ],
+        "labels": [
+          "black dress",
+          "human face",
+          "human face",
+          "human face",
+          "human face"
+        ]
+      }
+    },
+    "region_proposal": {
+      "<REGION_PROPOSAL>": {
+        "bboxes": [
+          [
+            0.5400000214576721,
+            0.3034999966621399,
+            1078.3800048828125,
+            606.0894775390625
+          ],
+          [
+            274.8600158691406,
+            97.42350006103516,
+            757.6200561523438,
+            508.969482421875
+          ],
+          [
+            273.7799987792969,
+            96.2094955444336,
+            408.780029296875,
+            498.6504821777344
+          ],
+          [
+            399.0600280761719,
+            116.84749603271484,
+            532.9800415039062,
+            501.68548583984375
+          ],
+          [
+            514.6199951171875,
+            107.135498046875,
+            644.2200317382812,
+            508.36248779296875
+          ],
+          [
+            618.300048828125,
+            118.66849517822266,
+            757.6200561523438,
+            508.969482421875
+          ]
+        ],
+        "labels": [
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ]
+      }
+    }
+  },
+  "metadata": {
+    "model": "microsoft/Florence-2-base-ft",
+    "device": "cuda",
+    "torch_dtype": "torch.float16",
+    "executed_tasks": [
+      "CAPTION",
+      "DETAILED_CAPTION",
+      "OCR",
+      "OBJECT_DETECTION"
+    ]
+  },
+  "post_processing": {
+    "combined_caption": {
+      "combined": "Four people posing for a photo in front of a sign that says NANCE LTD.\n\nIn this image we can see four people standing on the floor. One person is holding an object in his hand. In the background, we can also see a screen with some text on it.\n\nFour people are standing on a stage in front of a wall that says \"Industrials Sector\" on it. Three of the people are men and one of the women are women. They are all dressed in black suits. The woman is wearing a long black dress. The man in the middle is holding a box. The floor of the stage is dark brown.",
+      "paragraph_count": 3
+    },
+    "ocr_information": {
+      "raw": "CENTURION CLUBINDUSTRIALS SECTORNANCEG LTDR TAX",
+      "lines": [
+        "CENTURION",
+        "CLUBINDUSTRIALS",
+        "SECTORNANCEG",
+        "LTDR",
+        "TAX"
+      ],
+      "keywords": [
+        "CENTURION",
+        "CLUBINDUSTRIALS",
+        "SECTORNANCEG",
+        "LTDR",
+        "TAX"
+      ],
+      "ocr_primary_year": null,
+      "possible_years": [],
+      "possible_dates": [],
+      "possible_times": [],
+      "possible_company": [],
+      "region_labels": [
+        "CENTURION CLUB",
+        "INDUSTRIALS SECTOR",
+        "NAN",
+        "G LTD",
+        "R TAX"
+      ]
+    },
+    "object_statistics": {
+      "fancy dress": 1,
+      "human face": 4,
+      "person": 1,
+      "suit": 3,
+      "tie": 2
+    },
+    "physical_metadata": {
+      "metadata_year": "2026",
+      "metadata_date_full": "2026-08-05 16:48:52",
+      "metadata_source": "file_system_created"
+    },
+    "final_primary_year": "2026"
+  }
+}

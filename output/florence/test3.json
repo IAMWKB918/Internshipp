@@ -1,0 +1,199 @@
+{
+  "image_information": {
+    "width": 765,
+    "height": 1020,
+    "aspect_ratio": 0.75,
+    "mode": "RGB",
+    "file_path": "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\input\\test3.jpg"
+  },
+  "captions": {
+    "caption": {
+      "<CAPTION>": "A white and blue vase sitting on top of a table."
+    },
+    "detailed_caption": {
+      "<DETAILED_CAPTION>": "In the center of the image we can see a trophy placed on the table. In the background there is a wall."
+    },
+    "more_detailed_caption": {
+      "<MORE_DETAILED_CAPTION>": "A white and blue vase sits on top of a black base. There is a gold decoration on the top of the vase. "
+    }
+  },
+  "ocr": {
+    "plain_ocr": {
+      "<OCR>": "美山限色酒展艺技有晐公司中文茶屋配护有有层有年有定有全有司"
+    },
+    "ocr_with_region": {
+      "<OCR_WITH_REGION>": {
+        "quad_boxes": [
+          [
+            355.3424987792969,
+            33.14999771118164,
+            431.0774841308594,
+            33.14999771118164,
+            431.0774841308594,
+            55.59000015258789,
+            355.3424987792969,
+            55.59000015258789
+          ],
+          [
+            353.8125,
+            372.80999755859375,
+            406.5975036621094,
+            372.80999755859375,
+            406.5975036621094,
+            540.0899658203125,
+            353.8125,
+            540.0899658203125
+          ],
+          [
+            297.9674987792969,
+            592.1099853515625,
+            428.0174865722656,
+            600.2699584960938,
+            426.48748779296875,
+            623.72998046875,
+            297.2024841308594,
+            615.5700073242188
+          ],
+          [
+            297.9674987792969,
+            616.5899658203125,
+            426.48748779296875,
+            624.75,
+            424.9574890136719,
+            649.22998046875,
+            297.2024841308594,
+            641.0700073242188
+          ],
+          [
+            265.072509765625,
+            863.4299926757812,
+            463.9725036621094,
+            863.4299926757812,
+            463.9725036621094,
+            880.7699584960938,
+            265.072509765625,
+            880.7699584960938
+          ],
+          [
+            262.7774963378906,
+            886.8899536132812,
+            467.0325012207031,
+            886.8899536132812,
+            467.0325012207031,
+            901.1699829101562,
+            262.7774963378906,
+            901.1699829101562
+          ],
+          [
+            262.0124816894531,
+            900.1499633789062,
+            467.0325012207031,
+            900.1499633789062,
+            467.0325012207031,
+            914.4299926757812,
+            262.0124816894531,
+            914.4299926757812
+          ]
+        ],
+        "labels": [
+          "</s>美活品",
+          "自动限公司",
+          "洋洀配酒酐",
+          "保护色司",
+          "中华激级酄约红酸纡酮酵",
+          "中千洗酫酌酷酘酕酔酖酢邮纩酥酨酱酬",
+          "华年年纭纫线纪纣纐纯纻纹纼纳纗纥纷纨纟纰纸"
+        ]
+      }
+    }
+  },
+  "detections": {
+    "objects": {
+      "<OD>": {
+        "bboxes": [
+          [
+            161.03250122070312,
+            0.5099999904632568,
+            606.2625122070312,
+            777.75
+          ]
+        ],
+        "labels": [
+          "teapot"
+        ]
+      }
+    }
+  },
+  "regions": {
+    "dense_region_caption": {
+      "<DENSE_REGION_CAPTION>": {
+        "bboxes": [],
+        "labels": []
+      }
+    },
+    "region_proposal": {
+      "<REGION_PROPOSAL>": {
+        "bboxes": [
+          [
+            161.03250122070312,
+            0.5099999904632568,
+            606.2625122070312,
+            777.75
+          ]
+        ],
+        "labels": [
+          ""
+        ]
+      }
+    }
+  },
+  "metadata": {
+    "model": "microsoft/Florence-2-base-ft",
+    "device": "cuda",
+    "torch_dtype": "torch.float16",
+    "executed_tasks": [
+      "CAPTION",
+      "DETAILED_CAPTION",
+      "OCR",
+      "OBJECT_DETECTION"
+    ]
+  },
+  "post_processing": {
+    "combined_caption": {
+      "combined": "A white and blue vase sitting on top of a table.\n\nIn the center of the image we can see a trophy placed on the table. In the background there is a wall.\n\nA white and blue vase sits on top of a black base. There is a gold decoration on the top of the vase. ",
+      "paragraph_count": 3
+    },
+    "ocr_information": {
+      "raw": "美山限色酒展艺技有晐公司中文茶屋配护有有层有年有定有全有司",
+      "lines": [
+        "美山限色酒展艺技有晐公司中文茶屋配护有有层有年有定有全有司"
+      ],
+      "keywords": [
+        "美山限色酒展艺技有晐公司中文茶屋配护有有层有年有定有全有司"
+      ],
+      "ocr_primary_year": null,
+      "possible_years": [],
+      "possible_dates": [],
+      "possible_times": [],
+      "possible_company": [],
+      "region_labels": [
+        "美活品",
+        "自动限公司",
+        "洋洀配酒酐",
+        "保护色司",
+        "中华激级酄约红酸纡酮酵",
+        "中千洗酫酌酷酘酕酔酖酢邮纩酥酨酱酬",
+        "华年年纭纫线纪纣纐纯纻纹纼纳纗纥纷纨纟纰纸"
+      ]
+    },
+    "object_statistics": {
+      "teapot": 1
+    },
+    "physical_metadata": {
+      "metadata_year": "2026",
+      "metadata_date_full": "2026-08-05 16:49:02",
+      "metadata_source": "file_system_created"
+    },
+    "final_primary_year": "2026"
+  }
+}

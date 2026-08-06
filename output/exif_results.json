@@ -1,0 +1,106 @@
+[
+  {
+    "file": "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\input\\test.jpg",
+    "confidence": "no_exif",
+    "source": null,
+    "exif_method": null,
+    "datetime_original": null,
+    "year": null,
+    "filesystem_time_reference_only": {
+      "mtime": "2026-08-05T13:54:51.385166",
+      "ctime": "2026-08-05T13:54:51.097150"
+    },
+    "note": "EXIF DateTimeOriginal missing."
+  },
+  {
+    "file": "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\input\\test1.jpg",
+    "confidence": "no_exif",
+    "source": null,
+    "exif_method": null,
+    "datetime_original": null,
+    "year": null,
+    "filesystem_time_reference_only": {
+      "mtime": "2026-08-05T16:48:39.912397",
+      "ctime": "2026-08-05T16:48:39.641510"
+    },
+    "note": "EXIF DateTimeOriginal missing."
+  },
+  {
+    "file": "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\input\\test2.jpg",
+    "confidence": "no_exif",
+    "source": null,
+    "exif_method": null,
+    "datetime_original": null,
+    "year": null,
+    "filesystem_time_reference_only": {
+      "mtime": "2026-08-05T16:48:52.289165",
+      "ctime": "2026-08-05T16:48:52.084705"
+    },
+    "note": "EXIF DateTimeOriginal missing."
+  },
+  {
+    "file": "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\input\\test3.jpg",
+    "confidence": "no_exif",
+    "source": null,
+    "exif_method": null,
+    "datetime_original": null,
+    "year": null,
+    "filesystem_time_reference_only": {
+      "mtime": "2026-08-05T16:49:02.712881",
+      "ctime": "2026-08-05T16:49:02.494777"
+    },
+    "note": "EXIF DateTimeOriginal missing."
+  },
+  {
+    "file": "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\input\\test4.jpg",
+    "confidence": "no_exif",
+    "source": null,
+    "exif_method": null,
+    "datetime_original": null,
+    "year": null,
+    "filesystem_time_reference_only": {
+      "mtime": "2026-08-05T16:49:15.281875",
+      "ctime": "2026-08-05T16:49:15.052131"
+    },
+    "note": "EXIF DateTimeOriginal missing."
+  },
+  {
+    "file": "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\input\\test5.webp",
+    "confidence": "no_exif",
+    "source": null,
+    "exif_method": null,
+    "datetime_original": null,
+    "year": null,
+    "filesystem_time_reference_only": {
+      "mtime": "2026-08-05T16:49:27.963741",
+      "ctime": "2026-08-05T16:49:27.751615"
+    },
+    "note": "EXIF DateTimeOriginal missing."
+  },
+  {
+    "file": "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\input\\test6.webp",
+    "confidence": "no_exif",
+    "source": null,
+    "exif_method": null,
+    "datetime_original": null,
+    "year": null,
+    "filesystem_time_reference_only": {
+      "mtime": "2026-08-05T16:49:36.781053",
+      "ctime": "2026-08-05T16:49:36.555625"
+    },
+    "note": "EXIF DateTimeOriginal missing."
+  },
+  {
+    "file": "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\input\\test7.jpg",
+    "confidence": "no_exif",
+    "source": null,
+    "exif_method": null,
+    "datetime_original": null,
+    "year": null,
+    "filesystem_time_reference_only": {
+      "mtime": "2026-08-05T16:50:00.023901",
+      "ctime": "2026-08-05T16:49:59.810222"
+    },
+    "note": "EXIF DateTimeOriginal missing."
+  }
+]
