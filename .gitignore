@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 1daily.txt
 2current problem.txt
 3tools.txt
@@ -19,3 +20,7 @@ invoice_input/
 static/
 5pingip detail.txt
 0tomorrowplan.txt
+=======
+input/
+output/
+>>>>>>> a1e08f1 (push)
