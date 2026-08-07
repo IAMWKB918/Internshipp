@@ -112,7 +112,7 @@ def main():
                         default=r"C:\Users\wkb75\Documents\intern cck record\florence\output\aggregated_for_llm.json")
     
     parser.add_argument("--config", 
-                        default=r"C:\Users\wkb75\Documents\intern cck record\florence\output\config.json")
+                        default=r"C:\Users\wkb75\Documents\intern cck record\florence\config.json")
     
     parser.add_argument("--images-dir", 
                         default=r"C:\Users\wkb75\Documents\intern cck record\florence\input")

@@ -25,12 +25,6 @@ DEFAULT_INPUT_DIR = r"C:\Users\wkb75\Documents\intern cck record\florence\input"
 
 # Locked output JSON file path
 DEFAULT_OUTPUT_FILE = r"C:\Users\wkb75\Documents\intern cck record\florence\output\paddle_results.json"
-from tqdm import tqdm
-try:
-    from paddleocr import PaddleOCR
-except ImportError:
-    print("错误: 未找到 paddleocr 库。请运行: pip install paddlepaddle paddleocr")
-    sys.exit(1)
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
 
@@ -46,7 +40,6 @@ def get_engine():
 
 def extract_raw_text(image_path: str) -> dict:
     """Extracts text from a single image and returns a structured dictionary."""
-    engine = get_engine()
     engine = get_engine()
     result = engine.ocr(image_path)
 
@@ -125,36 +118,6 @@ def main():
         print(f"Manifest saved to: {args.out}")
     except Exception as e:
         print(f"ERROR: Failed to write JSON file: {e}")
-    parser = argparse.ArgumentParser(description="PaddleOCR 中文抓取")
-    parser.add_argument("--file", help="单张图片路径")
-    parser.add_argument("--dir", help="图片文件夹路径")
-    parser.add_argument("--out", default="paddle_results.json", help="输出JSON文件路径 (必须是文件)")
-    args = parser.parse_args()
-
-    if not args.file and not args.dir:
-        parser.error("必须指定 --file 或 --dir")
-
-    if os.path.isdir(args.out):
-        parser.error(f"输出路径 '{args.out}' 是一个文件夹，请输入一个文件路径 (例如 output.json)")
-
-    if args.file:
-        result = extract_raw_text(args.file)
-        with open(args.out, "w", encoding="utf-8") as f:
-            json.dump([result], f, ensure_ascii=False, indent=2)
-        print(f"结果已保存至: {args.out}")
-
-    if args.dir:
-        files = sorted(f for f in glob.glob(os.path.join(args.dir, "*")) if f.lower().endswith(IMAGE_EXTS))
-        results = []
-        for f in tqdm(files, desc="处理中"):
-            try:
-                results.append(extract_raw_text(f))
-            except Exception as e:
-                results.append({"file": f, "raw_text": "", "lines": [], "error": str(e)})
-        
-        with open(args.out, "w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-        print(f"共处理 {len(results)} 张，结果存到: {args.out}")
 
 if __name__ == "__main__":
     main()

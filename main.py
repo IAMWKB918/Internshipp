@@ -1,162 +1,178 @@
-import sys
-import json
+#!/usr/bin/env python3
+"""
+main.py — 一键跑完整个照片整理流程
+
+用法:
+    python main.py "输入图片文件夹路径" [--output 输出根目录] [--config config.json]
+
+流程:
+    florence.py  ┐
+    exif.py       ├─► mixjson.py (合并) ─► classifier.py (按 config.json 分类)
+    paddleocr_extractor.py ┘                              │
+                                                            ▼
+                                          organizer.py (最终改名归档)
+"""
+
+import argparse
 import shutil
+import subprocess
+import sys
+import logging
+import time
 from pathlib import Path
 
-from florence import FlorenceAnalyzer
-from classifier import load_json, classify
-from organizer import unique_destination
+# ────────────────────────────────────────────────────────────────
+# 脚本位置（假设都和 main.py 放在同一个文件夹）
+# ────────────────────────────────────────────────────────────────
+SCRIPT_DIR = Path(__file__).resolve().parent
 
-# Windows 终端默认编码常常不是 UTF-8，直接打印中文会报错，这里强制改一下
-if sys.stdout.encoding is None or sys.stdout.encoding.lower() != "utf-8":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
-    except AttributeError:
-        pass
+FLORENCE_PY   = SCRIPT_DIR / "florence.py"
+EXIF_PY       = SCRIPT_DIR / "exif.py"
+PADDLEOCR_PY  = SCRIPT_DIR / "paddleocr_extractor.py"
+MIXJSON_PY    = SCRIPT_DIR / "mixjson.py"
+CLASSIFIER_PY = SCRIPT_DIR / "classifier.py"
+ORGANIZER_PY  = SCRIPT_DIR / "organizer.py"
 
-# ============================================================
-# PATHS
-# ============================================================
+DEFAULT_OUTPUT = SCRIPT_DIR / "output"
+DEFAULT_CONFIG = SCRIPT_DIR / "config.json"
 
-BASE_DIR = Path(__file__).resolve().parent
-
-INPUT_FOLDER = BASE_DIR / "input"
-ANALYSIS_FOLDER = BASE_DIR / "analysis"
-OUTPUT_FOLDER = BASE_DIR / "organized"
-CONFIG_FILE = BASE_DIR / "config.json"
-PIPELINE_LOG_FILE = ANALYSIS_FOLDER / "pipeline_log.json"
-
-IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("main")
 
 
-# ============================================================
-# FIND IMAGES
-# ============================================================
+class PipelineError(Exception):
+    """某个子脚本执行失败时抛出。main.py 命令行模式会捕获它并 sys.exit(1)；
+    被网页后端 (app.py) import 调用时，则可以捕获它返回错误信息而不会让整个服务器进程被杀掉。"""
+    def __init__(self, step_name: str, returncode: int):
+        self.step_name = step_name
+        self.returncode = returncode
+        super().__init__(f"{step_name} 失败 (退出码 {returncode})")
 
-def find_images(folder):
-    return sorted(
-        f.name for f in Path(folder).iterdir()
-        if f.suffix.lower() in IMAGE_EXTENSIONS
+
+def run_step(name: str, cmd: list[str]) -> None:
+    """跑一个子脚本；失败就抛出 PipelineError，交给调用方决定怎么处理。"""
+    log.info(f"▶ {name}")
+    log.info("  命令: " + " ".join(str(c) for c in cmd))
+    t0 = time.time()
+
+    # 不吃掉子进程的 stdout/stderr，直接原样打印出来（可以看到进度条/log）
+    result = subprocess.run(cmd)
+
+    elapsed = time.time() - t0
+    if result.returncode != 0:
+        log.error(f"✗ {name} 失败 (退出码 {result.returncode}, 耗时 {elapsed:.1f}s)")
+        raise PipelineError(name, result.returncode)
+    log.info(f"✓ {name} 完成 ({elapsed:.1f}s)")
+
+
+def run_pipeline(input_dir: Path, output_dir: Path, config_path: Path) -> None:
+    florence_dir     = output_dir / "florence"
+    exif_json        = output_dir / "exif_results.json"
+    paddle_json      = output_dir / "paddle_results.json"
+    aggregated_json  = output_dir / "aggregated_for_llm.json"
+    sorted_dir       = output_dir / "sorted"
+    manifest_json    = sorted_dir / "classify_manifest.json"
+    organized_dir    = output_dir / "organized_photos"
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # florence 每张图输出一个独立 json、从不覆盖旧文件，如果不清空，
+    # 上一批甚至几个月前测试留下的旧图片分析结果会一直混进这一批的合并结果里。
+    # 这里每次跑之前先清空重建，保证 aggregated_for_llm.json 只包含"这一批"的图片。
+    if florence_dir.exists():
+        shutil.rmtree(florence_dir)
+
+    # ---- 1a. Florence: 图片描述 + OCR + 物件识别 ----
+    run_step(
+        "Florence 图片分析",
+        [sys.executable, str(FLORENCE_PY), str(input_dir), str(florence_dir)],
     )
 
+    # ---- 1b. EXIF: 拍摄时间 ----
+    run_step(
+        "EXIF 时间抓取",
+        [sys.executable, str(EXIF_PY), "--dir", str(input_dir), "--out", str(exif_json)],
+    )
 
-# ============================================================
-# PROCESS ONE IMAGE (Step 1-4 分析 -> Step 5 分类 -> Step 6 归档)
-# ============================================================
+    # ---- 1c. PaddleOCR: 文字识别 ----
+    run_step(
+        "PaddleOCR 文字识别",
+        [sys.executable, str(PADDLEOCR_PY), "--dir", str(input_dir), "--out", str(paddle_json)],
+    )
 
-def process_image(filename, analyzer, config):
-    image_path = INPUT_FOLDER / filename
-    json_stem = Path(filename).stem
+    # ---- 2. mixjson: 合并三份结果 ----
+    run_step(
+        "合并 JSON (mixjson)",
+        [
+            sys.executable, str(MIXJSON_PY),
+            "--florence-dir", str(florence_dir),
+            "--exif", str(exif_json),
+            "--paddle", str(paddle_json),
+            "--output-dir", str(output_dir),
+        ],
+    )
 
-    print()
-    print("=" * 60)
-    print(f"Processing: {filename}")
-    print("=" * 60)
+    # ---- 3. classifier: 按 config.json 规则分类 + 复制一份 ----
+    run_step(
+        "分类归类 (classifier)",
+        [
+            sys.executable, str(CLASSIFIER_PY),
+            "--aggregated", str(aggregated_json),
+            "--config", str(config_path),
+            "--images-dir", str(input_dir),
+            "--output-dir", str(sorted_dir),
+        ],
+    )
 
-    log = {
-        "filename": filename,
-        "status": None,
-        "category": None,
-        "score": None,
-        "destination": None,
-        "error": None
-    }
+    # ---- 4. organizer: 最终改名归档（一对多） ----
+    run_step(
+        "改名归档 (organizer)",
+        [
+            sys.executable, str(ORGANIZER_PY),
+            "--manifest", str(manifest_json),
+            "--images-dir", str(input_dir),
+            "--output-root", str(organized_dir),
+        ],
+    )
 
-    try:
-        # --- Step 1-4: Florence 分析 ---
-        result = analyzer.analyze_image(str(image_path))
-        output_data = {"filename": filename, "analysis": result}
+    log.info("🎉 全部完成！")
+    log.info(f"   最终结果 (改名归档): {organized_dir}")
+    log.info(f"   分类副本 (中间产物): {sorted_dir}")
 
-        analysis_json_path = ANALYSIS_FOLDER / f"{json_stem}.json"
-        with open(analysis_json_path, "w", encoding="utf-8") as f:
-            json.dump(output_data, f, ensure_ascii=False, indent=4)
-
-        print(f"Analysis saved: {analysis_json_path}")
-
-        # --- Step 5: 分类 ---
-        classification = classify(output_data, config)
-
-        classification_json_path = ANALYSIS_FOLDER / f"{json_stem}_classification.json"
-        with open(classification_json_path, "w", encoding="utf-8") as f:
-            json.dump(classification, f, ensure_ascii=False, indent=4)
-
-        category = classification.get("category", "Other")
-        score = classification.get("score", 0)
-        print(f"Classification: {category} (score={score})")
-
-        # --- Step 6: 归档（复制原图到 organized/分类名/） ---
-        dest_dir = OUTPUT_FOLDER / category
-        dest_dir.mkdir(parents=True, exist_ok=True)
-
-        dest_path = unique_destination(dest_dir / filename)
-        shutil.copy2(image_path, dest_path)
-
-        print(f"Copied to: {dest_path}")
-
-        log.update({
-            "status": "done",
-            "category": category,
-            "score": score,
-            "destination": str(dest_path)
-        })
-
-    except Exception as e:
-        log["status"] = "error"
-        log["error"] = str(e)
-        print(f"Error processing {filename}: {e}")
-
-    return log
-
-
-# ============================================================
-# MAIN
-# ============================================================
 
 def main():
-    ANALYSIS_FOLDER.mkdir(exist_ok=True)
-    OUTPUT_FOLDER.mkdir(exist_ok=True)
+    parser = argparse.ArgumentParser(
+        description="一键跑完 florence → exif → paddleocr → mixjson → classifier → organizer"
+    )
+    parser.add_argument("input", help="要处理的图片文件夹路径")
+    parser.add_argument("--output", default=str(DEFAULT_OUTPUT),
+                         help="输出根目录 (默认: ./output)")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG),
+                         help="分类规则 config.json 路径 (默认: ./config.json)")
+    args = parser.parse_args()
 
-    if not CONFIG_FILE.exists():
-        print(f"[ERROR] 找不到 config.json: {CONFIG_FILE}")
-        return
+    input_dir = Path(args.input).resolve()
+    output_dir = Path(args.output).resolve()
+    config_path = Path(args.config).resolve()
 
-    config = load_json(CONFIG_FILE)
+    if not input_dir.is_dir():
+        log.error(f"输入文件夹不存在或不是文件夹: {input_dir}")
+        sys.exit(1)
+    if not config_path.exists():
+        log.error(f"找不到 config.json: {config_path}")
+        sys.exit(1)
 
-    if not INPUT_FOLDER.exists():
-        print(f"[ERROR] 找不到 input 文件夹: {INPUT_FOLDER}")
-        return
-
-    image_files = find_images(INPUT_FOLDER)
-
-    if not image_files:
-        print("No images found in input folder.")
-        return
-
-    print(f"Found {len(image_files)} image(s).")
-
-    analyzer = FlorenceAnalyzer()
-
-    logs = []
-    for filename in image_files:
-        log = process_image(filename, analyzer, config)
-        logs.append(log)
-
-    # --- Summary ---
-    done = sum(1 for l in logs if l["status"] == "done")
-    errors = sum(1 for l in logs if l["status"] == "error")
-
-    print()
-    print("=" * 60)
-    print("PIPELINE SUMMARY")
-    print("=" * 60)
-    print(f"完成: {done}")
-    print(f"出错: {errors}")
-
-    with open(PIPELINE_LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(logs, f, ensure_ascii=False, indent=4)
-
-    print(f"\n流程日志已保存到: {PIPELINE_LOG_FILE}")
+    t0 = time.time()
+    try:
+        run_pipeline(input_dir, output_dir, config_path)
+    except PipelineError as e:
+        log.error(f"流程中止: {e}")
+        sys.exit(1)
+    log.info(f"总耗时: {time.time() - t0:.1f}s")
 
 
 if __name__ == "__main__":

@@ -31,8 +31,13 @@
         .btn-green { background: #28a745; color: white; width: 100%; margin-top: 15px; font-size: 18px; }
         
         .summary-header { background: #222; padding: 15px; border-radius: 10px 10px 0 0; border-left: 5px solid #28a745; margin-top: 30px; display: none; }
-        .summary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; background: #222; padding: 15px; border-radius: 0 0 10px 10px; display: none; }
+        .summary-area { display: none; }
+        .year-block { background: #222; padding: 15px; border-radius: 10px; margin-top: 10px; }
+        .year-title { font-size: 18px; font-weight: bold; color: #ffc107; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .summary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; }
         .card { background: #333; padding: 15px; border-radius: 8px; text-align: center; border-bottom: 4px solid #007bff; }
+        .card button { margin-top: 8px; background: #444; color: #ddd; border: none; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
+        .card button:hover { background: #555; }
         #result-overlay { position:absolute; bottom:20px; background:rgba(0,0,0,0.85); padding:12px; border-radius:5px; display:none; z-index: 20; }
     </style>
 </head>
@@ -67,7 +72,7 @@
                 <button onclick="openLocalFolder('root')" style="background:#28a745; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer;">📂 Main Folder</button>
             </div>
         </div>
-        <div id="summary-area" class="summary-grid"></div>
+        <div id="summary-area" class="summary-area"></div>
     </div>
 
     <script>
@@ -118,7 +123,13 @@
                 body: JSON.stringify({ tasks: taskQueue })
             });
             const data = await res.json();
-            
+
+            if (!res.ok) {
+                statusText.innerText = "❌ " + (data.error || "处理失败，请看后台终端日志");
+                runBtn.disabled = false;
+                return;
+            }
+
             const imgElement = document.getElementById('current-img');
             const scanner = document.getElementById('scanner');
             const overlay = document.getElementById('result-overlay');
@@ -136,8 +147,8 @@
                 // 2. 等待动画周期
                 await new Promise(r => setTimeout(r, 1000));
                 
-                // 3. 显示结果
-                overlay.innerHTML = `<b style="color:#00ff00">Result: ${item.result}</b> <span style="font-size:12px">(Confidence: ${item.score})</span>`;
+                // 3. 显示结果 (年份/分类)
+                overlay.innerHTML = `<b style="color:#00ff00">Sorted into: ${item.result}</b>`;
                 await new Promise(r => setTimeout(r, 500));
             }
 
@@ -158,15 +169,45 @@
 
         function showSummary(summary, outputPath) {
             document.getElementById('summary-header').style.display = 'block';
-            document.getElementById('summary-area').style.display = 'grid';
+            document.getElementById('summary-area').style.display = 'block';
             document.getElementById('output-path-text').innerText = outputPath;
             const area = document.getElementById('summary-area');
             area.innerHTML = "";
-            for (let folder in summary) {
-                area.innerHTML += `<div class="card"><p>${folder}</p><h3>${summary[folder]}</h3><button onclick="openLocalFolder('${folder}')">📂 View Files</button></div>`;
+
+            // summary 结构: { "2023": { "Meeting": 5, "Event": 2 }, "2024": {...} }
+            const years = Object.keys(summary).sort().reverse();
+            if (years.length === 0) {
+                area.innerHTML = `<div style="color:#888;padding:15px;">No files were sorted.</div>`;
+                return;
+            }
+
+            for (const year of years) {
+                const categories = summary[year];
+                const yearTotal = Object.values(categories).reduce((a, b) => a + b, 0);
+
+                let cardsHtml = "";
+                for (const category in categories) {
+                    const count = categories[category];
+                    cardsHtml += `
+                        <div class="card">
+                            <p>${category}</p>
+                            <h3>${count}</h3>
+                            <button onclick="openLocalFolder('${year}/${category}')">📂 View Files</button>
+                        </div>`;
+                }
+
+                area.innerHTML += `
+                    <div class="year-block">
+                        <div class="year-title">
+                            <span>📅 ${year}</span>
+                            <span style="font-size:13px;color:#aaa;">${yearTotal} photos</span>
+                        </div>
+                        <div class="summary-grid">${cardsHtml}</div>
+                    </div>`;
             }
         }
-        async function openLocalFolder(name) { await fetch(`/open_folder/${name}`); }
+
+        async function openLocalFolder(target) { await fetch(`/open_folder/${target}`); }
 
         function resetSystem() {
     // 做法 1：直接刷新网页（最推荐，简单直接）

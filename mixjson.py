@@ -1,12 +1,23 @@
+import argparse
 import json
 import os
 import re
 
 # ==================== Path configuration ====================
+# 这些是默认值：如果不传对应的命令行参数，行为和原来完全一样。
 FLORENCE_DIR = r"C:\Users\wkb75\Documents\intern cck record\florence\output\florence"
 EXIF_PATH = r"C:\Users\wkb75\Documents\intern cck record\florence\output\exif_results.json"
 PADDLE_PATH = r"C:\Users\wkb75\Documents\intern cck record\florence\output\paddle_results.json"
 OUTPUT_DIR = r"C:\Users\wkb75\Documents\intern cck record\florence\output"
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="合并 florence/exif/paddle 三份结果为一份 aggregated json")
+    parser.add_argument("--florence-dir", default=FLORENCE_DIR, help="florence 每张图分析结果所在文件夹")
+    parser.add_argument("--exif", default=EXIF_PATH, help="exif_results.json 路径")
+    parser.add_argument("--paddle", default=PADDLE_PATH, help="paddle_results.json 路径")
+    parser.add_argument("--output-dir", default=OUTPUT_DIR, help="aggregated_for_llm.json 输出所在文件夹")
+    return parser.parse_args()
 
 
 def get_stem(path: str) -> str:
@@ -77,11 +88,13 @@ def _extract_year(value):
 
 
 def main():
+    args = parse_args()
+
     # ---------- 1. Load exif / paddle, index by stem ----------
     try:
-        with open(EXIF_PATH, 'r', encoding='utf-8') as f:
+        with open(args.exif, 'r', encoding='utf-8') as f:
             exif_lookup = {get_stem(i['file']): i for i in json.load(f)}
-        with open(PADDLE_PATH, 'r', encoding='utf-8') as f:
+        with open(args.paddle, 'r', encoding='utf-8') as f:
             paddle_lookup = {get_stem(i['file']): i for i in json.load(f)}
     except Exception as e:
         print(f"Error loading exif/paddle: {e}")
@@ -91,12 +104,12 @@ def main():
     unmatched = []
 
     # ---------- 2. Iterate over per-image Florence results ----------
-    for json_file in sorted(os.listdir(FLORENCE_DIR)):
+    for json_file in sorted(os.listdir(args.florence_dir)):
         if not json_file.endswith(".json"):
             continue
 
         img_stem = get_stem(json_file)  # already extension-free, lowercase
-        with open(os.path.join(FLORENCE_DIR, json_file), 'r', encoding='utf-8') as f:
+        with open(os.path.join(args.florence_dir, json_file), 'r', encoding='utf-8') as f:
             flo = json.load(f)
 
         exif_item = exif_lookup.get(img_stem, {})
@@ -171,7 +184,8 @@ def main():
         all_data.append(profile)
 
     # ---------- 3. Write output ----------
-    out_path = os.path.join(OUTPUT_DIR, "aggregated_for_llm.json")
+    os.makedirs(args.output_dir, exist_ok=True)
+    out_path = os.path.join(args.output_dir, "aggregated_for_llm.json")
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(all_data, f, indent=2, ensure_ascii=False)
 

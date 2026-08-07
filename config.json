@@ -1,0 +1,38 @@
+{
+  "_description": "The single allocation config. Change this file to change the sorting result — no need to touch classifier.py.",
+
+  "output": {
+    "path_template": "{year}/{category}",
+    "_path_template_note": "Folder hierarchy. Available placeholders: {year} {category}. Use '{category}/{year}' to flip the order."
+  },
+
+  "default_category": "Unclassified",
+
+  "categories": [
+    {
+      "name": "奖杯特写",
+      "ocr_keywords": ["AWARD", "TROPHY", "LIMITED", "NOTES", "MANAGER", "BOOKRUNNER"],
+      "caption_keywords": ["award", "trophy", "vase sitting", "glass object"],
+      "scene_objects": ["vase", "trophy", "plaque"]
+    },
+    {
+      "name": "敬酒宴会",
+      "ocr_keywords": ["TOASTING", "敬酒", "BANQUET", "ANNIVERSARY"],
+      "caption_keywords": ["banquet", "wine glasses", "toasting", "sitting around a table"],
+      "scene_objects": ["wine glass"]
+    },
+    {
+      "name": "颁奖庆典合照",
+      "ocr_keywords": ["CEREMONY", "SECTOR", "CLUB", "CHAMBER", "ANNUAL"],
+      "caption_keywords": ["posing", "red carpet", "stage"],
+      "scene_objects": []
+    },
+    {
+      "name": "大合照",
+      "ocr_keywords": [],
+      "caption_keywords": [],
+      "scene_objects": [],
+      "min_person_count": 8
+    }
+  ]
+}

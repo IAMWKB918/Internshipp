@@ -387,10 +387,14 @@ class FlorenceAnalyzer:
 # ------------------------------------------------------------------
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("用法: python florence.py <图片路径 或 图片文件夹>")
+        print("用法: python florence.py <图片路径 或 图片文件夹> [输出文件夹]")
         sys.exit(1)
 
     input_path = sys.argv[1]
+    # 第二个参数可选：每张图的分析结果 json 存放的文件夹。
+    # 不传的话保持原来写死的默认路径，行为不变。
+    output_dir = sys.argv[2] if len(sys.argv) > 2 else \
+        "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\output\\florence"
     IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
 
     analyzer = FlorenceAnalyzer()
@@ -400,7 +404,6 @@ if __name__ == "__main__":
         if not image_files:
             print(f"文件夹 {input_path} 内没有找到图片文件"); sys.exit(1)
 
-        output_dir = "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\output\\florence"
         os.makedirs(output_dir, exist_ok=True)
 
         for img_path in image_files:
