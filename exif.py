@@ -120,22 +120,15 @@ def process_directory(dir_path: Path) -> list:
                 results.append(process_image(file_path))
     return results
 
-
 def main():
     parser = argparse.ArgumentParser(description="EXIF DateTimeOriginal extraction tool")
     
     parser.add_argument("path", nargs='?', help="Path to a single image or directory")
     parser.add_argument("--file", help="Path to a single image")
     parser.add_argument("--dir", help="Path to a directory")
-    # 默认值改为一个文件名，而不是路径
-<<<<<<< HEAD
     parser.add_argument("--out", 
                         default=r"C:\Users\wkb75\Documents\intern cck record\florence\output\exif_results.json", 
                         help="Output JSON file")    
-=======
-    parser.add_argument("--out", default="exif_results.json", help="Output JSON file or directory")
-    
->>>>>>> a1e08f1a21dc5f10447ccfd07aafb99dd5fbb277
     args = parser.parse_args()
 
     # Determine input path
