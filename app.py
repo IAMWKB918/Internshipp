@@ -154,6 +154,14 @@ def run_tasks():
         "output_path": str(organized_dir),
     })
 
+def test():
+    print("--- 收到请求了 ---") # 看看这行出不出
+    try:
+        # 你的逻辑
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        print(f"--- 报错了: {e} ---") # 捕获异常打印出来
+        return str(e), 500
 
 # ────────────────────────────────────────────────────────────────
 # 给扫描动画用的缩略图 (直接读这一批任务的临时输入文件夹)
@@ -187,4 +195,4 @@ def open_folder(target):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(host='127.0.0.1', port=5001, debug=True, use_reloader=False)
