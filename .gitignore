@@ -4,7 +4,6 @@
 2current problem.txt
 3tools.txt
 4autosystemsolution.txt
-avaj.html
 dataset.py
 filing_image.py
 ocr_engine.py
@@ -12,8 +11,6 @@ package-lock.json
 package.json
 process_log.json
 processor.js
-sales.csv
-try.html
 __pycache__/csv.cpython-311.pyc
 animal/
 node_modules/
