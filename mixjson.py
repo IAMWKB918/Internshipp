@@ -4,197 +4,163 @@ import os
 import re
 
 # ==================== Path configuration ====================
-# 这些是默认值：如果不传对应的命令行参数，行为和原来完全一样。
 FLORENCE_DIR = r"C:\Users\wkb75\Documents\intern cck record\florence\output\florence"
 EXIF_PATH = r"C:\Users\wkb75\Documents\intern cck record\florence\output\exif_results.json"
 PADDLE_PATH = r"C:\Users\wkb75\Documents\intern cck record\florence\output\paddle_results.json"
 OUTPUT_DIR = r"C:\Users\wkb75\Documents\intern cck record\florence\output"
 
-
 def parse_args():
-    parser = argparse.ArgumentParser(description="合并 florence/exif/paddle 三份结果为一份 aggregated json")
-    parser.add_argument("--florence-dir", default=FLORENCE_DIR, help="florence 每张图分析结果所在文件夹")
-    parser.add_argument("--exif", default=EXIF_PATH, help="exif_results.json 路径")
-    parser.add_argument("--paddle", default=PADDLE_PATH, help="paddle_results.json 路径")
-    parser.add_argument("--output-dir", default=OUTPUT_DIR, help="aggregated_for_llm.json 输出所在文件夹")
+    parser = argparse.ArgumentParser(description="Aggregate Florence, EXIF, and PaddleOCR results with enhanced tagging.")
+    parser.add_argument("--florence-dir", default=FLORENCE_DIR)
+    parser.add_argument("--exif", default=EXIF_PATH)
+    parser.add_argument("--paddle", default=PADDLE_PATH)
+    parser.add_argument("--output-dir", default=OUTPUT_DIR)
     return parser.parse_args()
 
-
 def get_stem(path: str) -> str:
-    """
-    Extract a stable, extension-free, lowercase "stem" from any path format
-    (absolute/relative, forward/back slashes, any extension casing), used
-    as the join key across the three JSON sources.
-
-    This is the core bug fix: the original script built the lookup dicts
-    keyed on the basename WITH extension (e.g. "test.jpg"), but looked
-    them up using a key WITHOUT extension (e.g. "test") -> exif/paddle
-    lookups always missed -> filesystem_time_reference_only was always
-    empty.
-    """
-    # Handles both "input\\test.jpg" and "C:\\...\\test.jpg" style paths
     base = re.split(r'[\\/]', path.strip())[-1]
     stem, _ext = os.path.splitext(base)
     return stem.lower()
 
+def is_gibberish(text):
+    """Detects if Florence OCR is hallucinating gibberish characters."""
+    if not text: return True
+    # Typical Florence hallucination characters for Chinese
+    hallucination_pattern = re.compile(r'[艣艪艬艭艴艱艫艼艨艵艿艷艟艂艻艗艘艽艉]')
+    return len(hallucination_pattern.findall(text)) > 2
 
-def pick_primary_year(exif_item: dict, florence_post: dict):
+def extract_strict_year(text):
     """
-    Priority order: EXIF year > filesystem mtime > filesystem ctime > Florence fallback.
-
-    Florence's own `final_primary_year` is itself derived from filesystem
-    time (see physical_metadata.metadata_source == "file_system_created"),
-    so it is NOT treated as an independent signal -- it's only used as a
-    last resort when neither exif nor local mtime/ctime yield a year.
-    `year_source` is returned alongside so downstream consumers (or you,
-    debugging) know how trustworthy the year actually is.
+    Extracts 4-digit years (19xx or 20xx) only.
+    Uses word boundaries (\b) to ignore numbers like '60' in '60th Anniversary'.
     """
-    fs_info = exif_item.get("filesystem_time_reference_only", {}) or {}
-    mtime = fs_info.get("mtime")
-    ctime = fs_info.get("ctime")
+    if not text: return None
+    matches = re.findall(r'\b(19\d{2}|20\d{2})\b', str(text))
+    return matches[-1] if matches else None
 
-    # 1) EXIF original capture time (most trustworthy)
-    if exif_item.get("datetime_original"):
-        y = exif_item.get("year") or _extract_year(exif_item["datetime_original"])
-        if y:
-            return y, "exif_datetime_original", mtime, ctime
+def pick_primary_year(exif_item, paddle_raw, mtime, ctime):
+    """
+    Decision logic for the most reliable year.
+    Priority: EXIF > PaddleOCR Text > File System Time.
+    Florence OCR is excluded from year priority due to hallucination risks.
+    """
+    # 1. Check EXIF
+    y = extract_strict_year(exif_item.get("datetime_original"))
+    if y: return y, "exif_datetime_original"
 
-    # 2) Filesystem mtime
+    # 2. Check PaddleOCR (Highly reliable for text on image)
+    y = extract_strict_year(paddle_raw)
+    if y: return y, "paddle_ocr"
+
+    # 3. Check System Times
     if mtime:
-        y = _extract_year(mtime)
-        if y:
-            return y, "filesystem_mtime", mtime, ctime
-
-    # 3) Filesystem ctime
+        y = extract_strict_year(mtime)
+        if y: return y, "filesystem_mtime"
+    
     if ctime:
-        y = _extract_year(ctime)
-        if y:
-            return y, "filesystem_ctime", mtime, ctime
+        y = extract_strict_year(ctime)
+        if y: return y, "filesystem_ctime"
 
-    # 4) Florence's own fallback year (also filesystem-derived, last resort only)
-    florence_year = (florence_post.get("physical_metadata", {}) or {}).get("metadata_year") \
-        or florence_post.get("final_primary_year")
-    if florence_year:
-        return florence_year, "florence_fallback", mtime, ctime
-
-    return "Unknown", "none", mtime, ctime
-
-
-def _extract_year(value):
-    if not value:
-        return None
-    m = re.search(r'(\d{4})', str(value))
-    return m.group(1) if m else None
-
+    return "Unknown", "none"
 
 def main():
     args = parse_args()
 
-    # ---------- 1. Load exif / paddle, index by stem ----------
     try:
         with open(args.exif, 'r', encoding='utf-8') as f:
             exif_lookup = {get_stem(i['file']): i for i in json.load(f)}
         with open(args.paddle, 'r', encoding='utf-8') as f:
             paddle_lookup = {get_stem(i['file']): i for i in json.load(f)}
     except Exception as e:
-        print(f"Error loading exif/paddle: {e}")
-        return
+        print(f"Error loading source files: {e}"); return
 
     all_data = []
-    unmatched = []
 
-    # ---------- 2. Iterate over per-image Florence results ----------
     for json_file in sorted(os.listdir(args.florence_dir)):
-        if not json_file.endswith(".json"):
-            continue
+        if not json_file.endswith(".json"): continue
 
-        img_stem = get_stem(json_file)  # already extension-free, lowercase
+        img_stem = get_stem(json_file)
         with open(os.path.join(args.florence_dir, json_file), 'r', encoding='utf-8') as f:
             flo = json.load(f)
 
         exif_item = exif_lookup.get(img_stem, {})
         paddle_item = paddle_lookup.get(img_stem, {})
-
-        if not exif_item:
-            unmatched.append((img_stem, "exif"))
-        if not paddle_item:
-            unmatched.append((img_stem, "paddle"))
-
-        florence_post = flo.get("post_processing", {}) or {}
-        florence_captions = flo.get("captions", {}) or {}
-        florence_ocr_info = florence_post.get("ocr_information", {}) or {}
-        florence_obj_stats = florence_post.get("object_statistics", {}) or {}
-
-        # ---- Time signal: exif > mtime > ctime > florence fallback ----
-        year, year_source, mtime, ctime = pick_primary_year(exif_item, florence_post)
-
-        # ---- OCR: keep both florence and paddle, don't let one overwrite the other ----
-        florence_raw_ocr = flo.get("ocr", {}).get("plain_ocr", {}).get("<OCR>", "")
+        
+        flo_post = flo.get("post_processing", {}) or {}
+        flo_captions = flo.get("captions", {}) or {}
+        flo_raw_ocr = flo.get("ocr", {}).get("plain_ocr", {}).get("<OCR>", "")
         paddle_raw_ocr = paddle_item.get("raw_text", "")
+        
+        fs_info = exif_item.get("filesystem_time_reference_only", {}) or {}
+        mtime, ctime = fs_info.get("mtime"), fs_info.get("ctime")
 
-        # Paddle's high-confidence (>=0.85) lines tend to be cleaner than
-        # Florence's single OCR blob, and matter a lot for classifying
-        # "what event / which organization" this photo belongs to.
-        paddle_high_conf_lines = [
+        # --- Logic: Strict Year Determination ---
+        year, year_source = pick_primary_year(exif_item, paddle_raw_ocr, mtime, ctime)
+
+        # --- Logic: OCR Keyword Filtering ---
+        paddle_high_conf = [
             line["text"] for line in paddle_item.get("lines", [])
             if line.get("confidence", 0) >= 0.85
         ]
+        
+        is_flo_valid = not is_gibberish(flo_raw_ocr)
+        flo_keywords = flo_post.get("ocr_information", {}).get("keywords", []) if is_flo_valid else []
+        final_keywords = list(set(paddle_high_conf + flo_keywords))
+
+        # ==========================================================
+        # NEW TAG 1: has_text_keywords
+        # True if PaddleOCR found reliable text
+        # ==========================================================
+        has_text_keywords = len(paddle_high_conf) > 0
+
+        # ==========================================================
+        # NEW TAG 2: visual_cluster_id
+        # Placeholder for external clustering results
+        # ==========================================================
+        visual_cluster_id = flo.get("visual_cluster_id", 0)
+
+        # ==========================================================
+        # NEW TAG 3: florence_caption
+        # Optimized semantic description for search
+        # ==========================================================
+        florence_caption = flo_captions.get("more_detailed_caption", {}).get("<MORE_DETAILED_CAPTION>", "")
 
         profile = {
             "file": img_stem,
+            
+            # --- New Update Tags ---
+            "has_text_keywords": has_text_keywords,
+            "visual_cluster_id": visual_cluster_id,
+            "florence_caption": florence_caption,
 
             "time_info": {
                 "inferred_year": year,
-                "year_source": year_source,      # exif_datetime_original / filesystem_mtime / filesystem_ctime / florence_fallback / none
+                "year_source": year_source,
                 "file_modified_time": mtime,
                 "file_created_time": ctime,
                 "exif_datetime_original": exif_item.get("datetime_original"),
-                "has_exif": bool(exif_item.get("datetime_original")),
-                "exif_confidence": exif_item.get("confidence"),
             },
 
-            "visual_description": {
-                "short": florence_captions.get("caption", {}).get("<CAPTION>", ""),
-                "detailed": florence_captions.get("detailed_caption", {}).get("<DETAILED_CAPTION>", ""),
-                "most_detailed": florence_captions.get("more_detailed_caption", {}).get("<MORE_DETAILED_CAPTION>", ""),
+            "ocr_summary": {
+                "paddle_text": paddle_raw_ocr,
+                "florence_ocr_status": "valid" if is_flo_valid else "ignored_gibberish",
+                "merged_keywords": final_keywords,
             },
 
-            "ocr": {
-                "florence_raw": florence_raw_ocr,
-                "paddle_raw": paddle_raw_ocr,
-                "paddle_high_confidence_lines": paddle_high_conf_lines,
-                "keywords": florence_ocr_info.get("keywords", []),
-                "possible_years": florence_ocr_info.get("possible_years", []),
-                "possible_dates": florence_ocr_info.get("possible_dates", []),
-                "possible_times": florence_ocr_info.get("possible_times", []),
-                "possible_company": florence_ocr_info.get("possible_company", []),
-            },
+            "scene_stats": flo_post.get("object_statistics", {}),
 
-            "scene_stats": florence_obj_stats,  # e.g. {"human face": 8, "suit": 8, "tie": 2}
-
-            "analysis_notes": (
-                "inferred_year follows the priority exif > filesystem_mtime > "
-                "filesystem_ctime > florence_fallback and can be used directly "
-                "as the classification year; year_source indicates its confidence. "
-                "Both florence and paddle OCR outputs are kept side by side -- "
-                "paddle is usually more accurate for Chinese / low-contrast text."
-            ),
+            "meta": {
+                "analysis_note": "Year filtered by strict 4-digit regex. Florence gibberish discarded."
+            }
         }
-
         all_data.append(profile)
 
-    # ---------- 3. Write output ----------
     os.makedirs(args.output_dir, exist_ok=True)
     out_path = os.path.join(args.output_dir, "aggregated_for_llm.json")
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(all_data, f, indent=2, ensure_ascii=False)
 
-    print(f"Done! Aggregated {len(all_data)} files -> {out_path}")
-    if unmatched:
-        print(f"WARNING: {len(unmatched)} entries had no match in exif/paddle, check if the file is really missing:")
-        for stem, missing_from in unmatched:
-            print(f"   - {stem}: missing in {missing_from}")
-
+    print(f"Aggregation complete. Processed {len(all_data)} files.")
 
 if __name__ == "__main__":
     main()

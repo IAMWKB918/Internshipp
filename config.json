@@ -8,27 +8,45 @@
 
   "default_category": "Unclassified",
 
+  "text_gate": {
+    "_note": "React to has_text_keywords. When false, this image's OCR text is empty/unreliable — skip ocr_keywords matching entirely for it and fall straight through to caption_keywords / scene_objects. Prevents false negatives/positives from trying to match keywords against nothing.",
+    "enabled": true,
+    "field": "has_text_keywords"
+  },
+
+  "cluster_consistency": {
+    "_note": "React to visual_cluster_id. Images sharing the same cluster id are almost always burst/near-duplicate shots of the same moment — florence_caption wording can drift slightly between them (e.g. 'vase sits on top of' vs 'vase sitting on top of') even though the correct category is the same. Organizer should classify per-cluster, not per-file: take the majority category across the cluster's members and apply it to all of them, only falling back to per-file classification if the cluster is a tie or has a single member.",
+    "enabled": true,
+    "field": "visual_cluster_id",
+    "strategy": "majority_vote",
+    "tie_breaker": "keep_independent_classification"
+  },
+
   "categories": [
     {
       "name": "奖杯特写",
+      "require_text_gate": false,
       "ocr_keywords": ["AWARD", "TROPHY", "LIMITED", "NOTES", "MANAGER", "BOOKRUNNER"],
-      "caption_keywords": ["award", "trophy", "vase sitting", "glass object"],
-      "scene_objects": ["vase", "trophy", "plaque"]
+      "caption_keywords": ["award", "trophy", "vase", "glass object", "clear plastic", "gold decoration"],
+      "scene_objects": ["vase", "trophy", "plaque", "teapot"]
     },
     {
       "name": "敬酒宴会",
+      "require_text_gate": false,
       "ocr_keywords": ["TOASTING", "敬酒", "BANQUET", "ANNIVERSARY"],
-      "caption_keywords": ["banquet", "wine glasses", "toasting", "sitting around a table"],
+      "caption_keywords": ["banquet", "wine glasses", "toasting", "long table", "sitting at a", "sitting around a table"],
       "scene_objects": ["wine glass"]
     },
     {
       "name": "颁奖庆典合照",
+      "require_text_gate": false,
       "ocr_keywords": ["CEREMONY", "SECTOR", "CLUB", "CHAMBER", "ANNUAL"],
-      "caption_keywords": ["posing", "red carpet", "stage"],
+      "caption_keywords": ["posing", "red carpet", "standing on a stage", "standing on stage"],
       "scene_objects": []
     },
     {
       "name": "大合照",
+      "require_text_gate": false,
       "ocr_keywords": [],
       "caption_keywords": [],
       "scene_objects": [],
