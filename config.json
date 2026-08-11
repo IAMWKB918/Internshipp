@@ -1,56 +1,37 @@
 {
-  "_description": "The single allocation config. Change this file to change the sorting result — no need to touch classifier.py.",
-
+  "_description": "V8 简化版：只按人数/是否摆拍做结构化分类，不再依赖caption关键词猜语义",
   "output": {
-    "path_template": "{year}/{category}",
-    "_path_template_note": "Folder hierarchy. Available placeholders: {year} {category}. Use '{category}/{year}' to flip the order."
+    "path_template": "{category}"
   },
-
   "default_category": "Unclassified",
-
-  "text_gate": {
-    "_note": "React to has_text_keywords. When false, this image's OCR text is empty/unreliable — skip ocr_keywords matching entirely for it and fall straight through to caption_keywords / scene_objects. Prevents false negatives/positives from trying to match keywords against nothing.",
-    "enabled": true,
-    "field": "has_text_keywords"
-  },
-
-  "cluster_consistency": {
-    "_note": "React to visual_cluster_id. Images sharing the same cluster id are almost always burst/near-duplicate shots of the same moment — florence_caption wording can drift slightly between them (e.g. 'vase sits on top of' vs 'vase sitting on top of') even though the correct category is the same. Organizer should classify per-cluster, not per-file: take the majority category across the cluster's members and apply it to all of them, only falling back to per-file classification if the cluster is a tie or has a single member.",
-    "enabled": true,
-    "field": "visual_cluster_id",
-    "strategy": "majority_vote",
-    "tie_breaker": "keep_independent_classification"
-  },
-
   "categories": [
     {
-      "name": "奖杯特写",
-      "require_text_gate": false,
-      "ocr_keywords": ["AWARD", "TROPHY", "LIMITED", "NOTES", "MANAGER", "BOOKRUNNER"],
-      "caption_keywords": ["award", "trophy", "vase", "glass object", "clear plastic", "gold decoration"],
-      "scene_objects": ["vase", "trophy", "plaque", "teapot"]
+      "name": "No_People",
+      "_comment": "没检测到人",
+      "max_person_count": 0
     },
     {
-      "name": "敬酒宴会",
-      "require_text_gate": false,
-      "ocr_keywords": ["TOASTING", "敬酒", "BANQUET", "ANNIVERSARY"],
-      "caption_keywords": ["banquet", "wine glasses", "toasting", "long table", "sitting at a", "sitting around a table"],
-      "scene_objects": ["wine glass"]
+      "name": "Individual_Portrait",
+      "_comment": "1-2人且Florence自己判断为摆拍/看镜头，用require_caption_hints过滤掉手/手臂闯入镜头这类假阳性（这类图人数和面积比会像真人像，但从不带posing/looking_at_camera这个hint）",
+      "min_person_count": 1,
+      "max_person_count": 2,
+      "min_real_person_area_ratio": 0.01,
+      "require_caption_hints": ["posing", "looking_at_camera"]
     },
     {
-      "name": "颁奖庆典合照",
-      "require_text_gate": false,
-      "ocr_keywords": ["CEREMONY", "SECTOR", "CLUB", "CHAMBER", "ANNUAL"],
-      "caption_keywords": ["posing", "red carpet", "standing on a stage", "standing on stage"],
-      "scene_objects": []
+      "name": "Group_Photo",
+      "_comment": "3人以上，不区分台上台下",
+      "min_person_count": 3
     },
     {
-      "name": "大合照",
-      "require_text_gate": false,
-      "ocr_keywords": [],
-      "caption_keywords": [],
-      "scene_objects": [],
-      "min_person_count": 8
+      "name": "Distant_People_or_Crowd",
+      "_comment": "有人出现但不满足上面两类的兜底：1-2人但没有摆拍信号（远景/路人/手部误检等）",
+      "min_person_count": 1,
+      "max_real_person_area_ratio": 0.05
+    },
+    {
+      "name": "Unclassified",
+      "_comment": "理论上不会用到，留作保险兜底"
     }
   ]
 }

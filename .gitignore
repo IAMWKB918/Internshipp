@@ -18,8 +18,9 @@ invoice_input/
 static/
 5pingip detail.txt
 0tomorrowplan.txt
-input/
 output/
 __pycache__/main.cpython-311.pyc
 _uploads_temp/
 paddle_results.json
+input/
+input2/

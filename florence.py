@@ -7,11 +7,11 @@ import logging
 import torch
 import datetime
 import platform
-import exifread  # 需先 pip install exifread
+import exifread
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForCausalLM
 
-# 解决 Windows 终端(cp1252/gbk)打印中文报 UnicodeEncodeError 的问题
+# Solve Windows terminal encoding issues
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
@@ -20,401 +20,363 @@ logger = logging.getLogger("florence")
 
 MODEL_NAME = "microsoft/Florence-2-base-ft"
 
-# 常见品牌/公司关键词库 —— 可按需扩充
-KNOWN_COMPANY_KEYWORDS = [
-    "CIMB", "MAYBANK", "PUBLIC BANK", "RHB", "HSBC", "STANDARD CHARTERED",
-    "THE EDGE", "BLOOMBERG", "REUTERS", "PWC", "DELOITTE", "KPMG", "EY",
+CONTAINER_LABELS = [
+    "picture frame", "picture", "board", "poster", "television", "monitor",
+    "screen", "frame", "photo", "photograph", "portrait", "canvas",
+    "wall art", "album", "certificate"
+    "banner", "red banner", "flag", "pennant"
+
 ]
 
-# ------------------------------------------------------------------
-# 时间/日期/年份相关正则
-# ------------------------------------------------------------------
-YEAR_PATTERN = re.compile(r"(?:19|20)\d{2}")
-
-DATE_PATTERN = re.compile(
-    r"\b(?:"
-    r"\d{1,2}\s*[/\-.]\s*\d{1,2}\s*[/\-.]\s*\d{2,4}"      # 01/03/2024, 01-03-24
-    r"|\d{4}\s*[/\-.]\s*\d{1,2}\s*[/\-.]\s*\d{1,2}"       # 2024-03-01
-    r"|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}"                 # 1 Jan 2024
-    r"|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{2,4}"               # Jan 1, 2024
-    r"|\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日?"          # 2024年3月1日
-    r")\b",
-    re.IGNORECASE
-)
-
-# 时间格式：14:30 / 09:15:00 / 2:30 PM / 2PM
-TIME_PATTERN = re.compile(
-    r"\b(?:"
-    r"\d{1,2}\s*:\s*\d{2}(?:\s*:\s*\d{2})?\s*(?:[AaPp]\.?[Mm]\.?)?"
-    r"|\d{1,2}\s*[AaPp][Mm]"
-    r")\b"
-)
-# 中文时间格式：上午9点30分 / 下午3时
-TIME_CN_PATTERN = re.compile(
-    r"(?:上午|下午|晚上|凌晨)?\s*\d{1,2}\s*[点时]\s*(?:\d{1,2}\s*分)?"
-)
-
+# If <OD> fails to detect an explicit container box, we fall back to grounding these
+# keywords from the caption text itself (the caption already says "a photo of a couple"
+# even when OD misses the frame/border object).
+PHOTO_CAPTION_KEYWORDS = ["photo", "picture", "poster", "framed", "portrait", "photograph",
+    "banner", "award", "certificate"]
 
 class FlorenceAnalyzer:
     def __init__(self):
         logger.info("=" * 60)
         logger.info("Loading Florence-2...")
-        logger.info("=" * 60)
-
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
 
-        logger.info(f"Device : {self.device}")
-        logger.info(f"DType  : {self.torch_dtype}")
-        logger.info(f"Model  : {MODEL_NAME}")
-
         self.model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
-            torch_dtype=self.torch_dtype,
-            trust_remote_code=True
+            MODEL_NAME, torch_dtype=self.torch_dtype, trust_remote_code=True
         ).to(self.device)
-
-        self.processor = AutoProcessor.from_pretrained(
-            MODEL_NAME,
-            trust_remote_code=True
-        )
-
+        self.processor = AutoProcessor.from_pretrained(MODEL_NAME, trust_remote_code=True)
         self.model.eval()
-
-        logger.info("=" * 60)
-        logger.info("Florence-2 Loaded Successfully")
-        logger.info("=" * 60)
+        logger.info(f"Florence-2 Loaded Successfully on {self.device}")
 
     # ------------------------------------------------------------------
-    # 元数据提取 (EXIF + 文件属性)
+    # Spatial Logic: Check if box A (person) is inside box B (frame)
     # ------------------------------------------------------------------
-    def _extract_metadata(self, image_path):
-        """
-        提取图片的物理元数据。
-        优先级：EXIF内部日期 > 文件系统创建时间(Created) > 文件系统修改时间(Modified)
-        """
-        meta_info = {
-            "metadata_year": None,
-            "metadata_date_full": None,
-            "metadata_source": None
-        }
+    @staticmethod
+    def is_box_inside(inner_box, outer_box, threshold=0.80):
+        ix1, iy1, ix2, iy2 = inner_box
+        ox1, oy1, ox2, oy2 = outer_box
+
+        x_left = max(ix1, ox1)
+        y_top = max(iy1, oy1)
+        x_right = min(ix2, ox2)
+        y_bottom = min(iy2, oy2)
+
+        if x_right < x_left or y_bottom < y_top:
+            return False
+
+        intersection_area = (x_right - x_left) * (y_bottom - y_top)
+        inner_area = (ix2 - ix1) * (iy2 - iy1) + 1e-6
         
+        return (intersection_area / inner_area) >= threshold
+
+    @staticmethod
+    def _overlap_ratio_vs_a(box_a, box_b):
+        """Fraction of box_a's area that overlaps box_b. Used for a softer containment
+        check against grounded caption-phrase boxes, which are often tighter/looser
+        than a true picture-frame box."""
+        ax1, ay1, ax2, ay2 = box_a
+        bx1, by1, bx2, by2 = box_b
+        x_left, y_top = max(ax1, bx1), max(ay1, by1)
+        x_right, y_bottom = min(ax2, bx2), min(ay2, by2)
+        if x_right < x_left or y_bottom < y_top:
+            return 0.0
+        intersection = (x_right - x_left) * (y_bottom - y_top)
+        area_a = (ax2 - ax1) * (ay2 - ay1) + 1e-6
+        return intersection / area_a
+        
+    def detect_silk_banners(self, image):
+        task_prompt = "<CAPTION_TO_PHRASE_GROUNDING>"
+        query_text = "red banner, silk banner, award pennant"
+    
+        inputs = self.processor(text=task_prompt + query_text, images=image, return_tensors="pt")
+
+    def ground_caption_phrases(self, image, caption_text):
+        """
+        Fallback container detection: re-feed the already-generated caption text into
+        <CAPTION_TO_PHRASE_GROUNDING>. This locates where phrases like "a photo of a
+        couple" actually sit in the image, even when <OD> failed to output an explicit
+        frame/poster/board box. Only called when it's actually needed (see caller).
+        """
+        task_prompt = "<CAPTION_TO_PHRASE_GROUNDING>"
         try:
-            # 1. 尝试读取 EXIF (针对拍照原图)
-            with open(image_path, 'rb') as f:
-                tags = exifread.process_file(f, details=False)
-                for tag in ['EXIF DateTimeOriginal', 'Image DateTime', 'EXIF DateTimeDigitized']:
-                    if tag in tags:
-                        date_str = str(tags[tag])
-                        year_match = YEAR_PATTERN.search(date_str)
-                        if year_match:
-                            meta_info["metadata_year"] = year_match.group()
-                            meta_info["metadata_date_full"] = date_str
-                            meta_info["metadata_source"] = "exif_internal"
-                            return meta_info
-
-            # 2. 尝试读取文件系统时间 (针对截图或无EXIF图片，即 Properties 面板显示的内容)
-            file_stat = os.stat(image_path)
-            # Windows 下 st_ctime 是创建时间，Unix 下 st_ctime 是属性改变时间
-            if platform.system() == 'Windows':
-                timestamp = file_stat.st_ctime
-                meta_info["metadata_source"] = "file_system_created"
-            else:
-                timestamp = file_stat.st_mtime
-                meta_info["metadata_source"] = "file_system_modified"
-            
-            dt_obj = datetime.datetime.fromtimestamp(timestamp)
-            meta_info["metadata_year"] = str(dt_obj.year)
-            meta_info["metadata_date_full"] = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
-
-        except Exception as e:
-            logger.warning(f"Metadata extraction failed for {image_path}: {e}")
-            
-        return meta_info
-
-    # ------------------------------------------------------------------
-    # Core task runner
-    # ------------------------------------------------------------------
-    def run_task(self, image, task_prompt):
-        try:
-            inputs = self.processor(
-                text=task_prompt,
-                images=image,
-                return_tensors="pt"
-            )
-
+            inputs = self.processor(text=task_prompt + caption_text, images=image, return_tensors="pt")
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
             if self.device == "cuda":
                 inputs["pixel_values"] = inputs["pixel_values"].to(self.torch_dtype)
-
             with torch.inference_mode():
                 generated_ids = self.model.generate(
-                    input_ids=inputs["input_ids"],
-                    pixel_values=inputs["pixel_values"],
-                    max_new_tokens=2048,
-                    num_beams=5,
-                    do_sample=False,
-                    early_stopping=True,
-                    repetition_penalty=1.15,
-                    length_penalty=1.0,
-                    no_repeat_ngram_size=3
+                    input_ids=inputs["input_ids"], pixel_values=inputs["pixel_values"],
+                    max_new_tokens=1024, num_beams=3
                 )
-
-            generated_text = self.processor.batch_decode(
-                generated_ids,
-                skip_special_tokens=False
-            )[0]
-
-            parsed_answer = self.processor.post_process_generation(
-                generated_text,
-                task=task_prompt,
-                image_size=image.size
-            )
-
-            return parsed_answer
-
+            generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+            parsed = self.processor.post_process_generation(generated_text, task=task_prompt, image_size=image.size)
+            return parsed.get(task_prompt, {}) or {}
         except Exception as e:
-            logger.warning(f"Task {task_prompt} failed: {e}")
-            return {
-                "status": "failed",
-                "task": task_prompt,
-                "error": str(e)
-            }
+            logger.warning(f"Phrase grounding fallback failed: {e}")
+            return {}
 
-    def safe_task(self, image, task_name, task_prompt):
-        logger.info("-" * 60)
-        logger.info(task_name)
-        logger.info("-" * 60)
-        return self.run_task(image, task_prompt)
+    @staticmethod
+    def _iou(box_a, box_b):
+        ax1, ay1, ax2, ay2 = box_a
+        bx1, by1, bx2, by2 = box_b
+        x_left, y_top = max(ax1, bx1), max(ay1, by1)
+        x_right, y_bottom = min(ax2, bx2), min(ay2, by2)
+        if x_right < x_left or y_bottom < y_top:
+            return 0.0
+        intersection = (x_right - x_left) * (y_bottom - y_top)
+        area_a = (ax2 - ax1) * (ay2 - ay1)
+        area_b = (bx2 - bx1) * (by2 - by1)
+        union = area_a + area_b - intersection + 1e-6
+        return intersection / union
+
+    def _dedupe_person_indices(self, person_indices, bboxes, iou_threshold=0.5):
+        """
+        Florence's <OD> sometimes fires twice on the same physical person (two
+        overlapping boxes, one of which may miss the container-containment check
+        by a few pixels while the other passes). That single person then gets
+        double-counted as both 'real' and 'in photo'. Merge boxes with high mutual
+        IoU into one, keeping the larger box, before any real/photo classification.
+        """
+        kept = []
+        # Largest box first so we keep the more complete detection when merging.
+        ordered = sorted(person_indices, key=lambda i: -(
+            (bboxes[i][2] - bboxes[i][0]) * (bboxes[i][3] - bboxes[i][1])
+        ))
+        for idx in ordered:
+            if any(self._iou(bboxes[idx], bboxes[k]) >= iou_threshold for k in kept):
+                continue
+            kept.append(idx)
+        return kept
 
     # ------------------------------------------------------------------
-    # Post-processing helpers
+    # Refine Labels and Captions
     # ------------------------------------------------------------------
-    @staticmethod
-    def normalize_keywords(raw_tokens):
-        seen = set()
-        normalized = []
-        for token in raw_tokens:
-            t = token.strip()
-            if not t: continue
-            t = re.sub(r"</?s>|<pad>|<unk>", "", t).strip()
-            if not t: continue
-            if len(t) < 2 and not t.isdigit(): continue
-            key = t.lower()
-            if key not in seen:
-                seen.add(key)
-                normalized.append(t)
-        return normalized
+    def refine_detections_and_caption(self, result, image):
+        od_result = result["detections"].get("objects", {}).get("<OD>", {})
+        caption_text = result["post_processing"]["combined_caption"]["combined"]
 
-    @staticmethod
-    def _extract_years_from_text(text):
-        return sorted(set(YEAR_PATTERN.findall(text) or []))
+        if not od_result or "bboxes" not in od_result:
+            return result
 
-    @staticmethod
-    def _extract_dates_from_text(text):
-        return sorted(set(DATE_PATTERN.findall(text) or []))
+        bboxes = od_result["bboxes"]
+        labels = od_result["labels"]
+        img_w, img_h = result["image_info"]["size"]
+        image_area = max(img_w * img_h, 1)
 
-    @staticmethod
-    def _extract_times_from_text(text):
-        times = set(TIME_PATTERN.findall(text) or [])
-        times |= set(TIME_CN_PATTERN.findall(text) or [])
-        return sorted(t.strip() for t in times if t.strip())
+        container_indices = [
+            i for i, l in enumerate(labels)
+            if any(kw in l.lower() for kw in CONTAINER_LABELS)
+        ]
+        raw_person_indices = [i for i, l in enumerate(labels) if l.lower() == "person"]
+        person_indices = self._dedupe_person_indices(raw_person_indices, bboxes)
 
-    @staticmethod
-    def _extract_companies_from_text(text):
-        upper_text = text.upper()
-        found = []
-        for company in KNOWN_COMPANY_KEYWORDS:
-            if company in upper_text and company not in found:
-                found.append(company)
-        return found
+        refined_labels = list(labels)
+        # Any duplicate person boxes we merged away should not appear as their own
+        # "person" entry in the final label statistics either.
+        dropped_duplicates = set(raw_person_indices) - set(person_indices)
+        for d_idx in dropped_duplicates:
+            refined_labels[d_idx] = None  # excluded below when building summary
 
-    @staticmethod
-    def _derive_year_from_dates(date_list):
-        derived = set()
-        for d in date_list:
-            nums = re.findall(r"\d+", d)
-            for n in nums:
-                if len(n) == 4 and n.startswith(("19", "20")):
-                    derived.add(n)
-                elif len(n) == 2:
-                    yy = int(n)
-                    full_year = f"20{n}" if yy <= 30 else f"19{n}"
-                    derived.add(full_year)
-        return derived
+        real_person_count = 0
+        photo_person_count = 0
 
-    def extract_ocr_information(self, ocr_result, ocr_region_result=None):
-        info = {
-            "raw": "",
-            "lines": [],
-            "keywords": [],
-            "ocr_primary_year": None,
-            "possible_years": [],
-            "possible_dates": [],
-            "possible_times": [],
-            "possible_company": [],
-            "region_labels": []
-        }
-
-        try:
-            raw = ocr_result.get("<OCR>", "") if isinstance(ocr_result, dict) else ""
-            info["raw"] = raw
-            words = raw.replace("\n", " ").split()
-            info["lines"] = words
-            info["keywords"] = self.normalize_keywords(words)
-            info["possible_years"] = self._extract_years_from_text(raw)
-            info["possible_dates"] = self._extract_dates_from_text(raw)
-            info["possible_times"] = self._extract_times_from_text(raw)
-            info["possible_company"] = self._extract_companies_from_text(raw)
-
-            if isinstance(ocr_region_result, dict):
-                region_data = ocr_region_result.get("<OCR_WITH_REGION>", {})
-                labels = region_data.get("labels", [])
-                cleaned_labels = self.normalize_keywords(labels)
-                info["region_labels"] = cleaned_labels
-                region_text = " ".join(cleaned_labels)
-                info["possible_years"] = sorted(set(info["possible_years"] + self._extract_years_from_text(region_text)))
-                info["possible_dates"] = sorted(set(info["possible_dates"] + self._extract_dates_from_text(region_text)))
-                info["possible_times"] = sorted(set(info["possible_times"] + self._extract_times_from_text(region_text)))
-
-            if info["possible_years"]:
-                info["ocr_primary_year"] = sorted(info["possible_years"])[-1]
+        # First pass: resolve against OD-detected containers (frame/poster/board/etc.)
+        unresolved_person_idx = []
+        for p_idx in person_indices:
+            p_box = bboxes[p_idx]
+            is_in_photo = any(self.is_box_inside(p_box, bboxes[c_idx]) for c_idx in container_indices)
+            if is_in_photo:
+                refined_labels[p_idx] = "person_in_photo"
+                photo_person_count += 1
             else:
-                derived = self._derive_year_from_dates(info["possible_dates"])
-                if derived:
-                    info["ocr_primary_year"] = sorted(derived)[-1]
-                    info["possible_years"] = sorted(set(info["possible_years"]) | derived)
-        except Exception as e:
-            logger.warning(f"extract_ocr_information failed: {e}")
+                unresolved_person_idx.append(p_idx)
 
-        return info
+        # Second pass (fallback): only runs when OD left some persons unresolved AND the
+        # caption text itself suggests a photo/poster/portrait scene. This is the case
+        # your florence.py was missing - OD misses the frame, but the caption already
+        # knows it's a photo.
+        caption_lower = caption_text.lower()
+        caption_suggests_photo = any(kw in caption_lower for kw in PHOTO_CAPTION_KEYWORDS)
 
-    def combine_caption(self, captions):
-        text = []
-        try:
-            for item in captions.values():
-                if isinstance(item, dict):
-                    for value in item.values():
-                        if isinstance(value, str) and value not in text:
-                            text.append(value)
-        except: pass
-        return {"combined": "\n\n".join(text), "paragraph_count": len(text)}
+        if unresolved_person_idx and caption_suggests_photo:
+            grounding = self.ground_caption_phrases(image, caption_text)
+            g_bboxes = grounding.get("bboxes", [])
+            g_labels = grounding.get("labels", [])
 
-    def count_detection(self, detection):
+            grounded_container_boxes = [
+                g_bboxes[i] for i, l in enumerate(g_labels)
+                if any(kw in l.lower() for kw in PHOTO_CAPTION_KEYWORDS)
+            ]
+
+            still_unresolved = []
+            for p_idx in unresolved_person_idx:
+                p_box = bboxes[p_idx]
+                # Softer check: most of the person's box falls inside a grounded "photo/picture" phrase box.
+                is_in_photo = any(
+                    self._overlap_ratio_vs_a(p_box, g_box) >= 0.6 for g_box in grounded_container_boxes
+                )
+                if is_in_photo:
+                    refined_labels[p_idx] = "person_in_photo"
+                    photo_person_count += 1
+                else:
+                    still_unresolved.append(p_idx)
+            unresolved_person_idx = still_unresolved
+
+        # Third pass (sibling propagation): a person who is still unresolved but
+        # sits tightly overlapping/adjacent to a person who WAS already resolved
+        # as "in photo" almost certainly belongs to the same object (e.g. a framed
+        # couple portrait where OD/grounding only caught the frame around one of
+        # the two people - common when the pair overlaps/touches, like arms around
+        # each other). Real people standing that close together essentially never
+        # end up half-real/half-photo, so we propagate the classification.
+        # Looped (not single-pass) so it also chains across 3+ people crammed into
+        # one group photo, not just pairs.
+        SIBLING_IOU_THRESHOLD = 0.05
+        changed = True
+        while changed and unresolved_person_idx:
+            changed = False
+            resolved_photo_boxes = [
+                bboxes[p_idx] for p_idx in person_indices
+                if refined_labels[p_idx] == "person_in_photo"
+            ]
+            if not resolved_photo_boxes:
+                break
+            still_unresolved = []
+            for p_idx in unresolved_person_idx:
+                p_box = bboxes[p_idx]
+                if any(self._iou(p_box, photo_box) >= SIBLING_IOU_THRESHOLD for photo_box in resolved_photo_boxes):
+                    refined_labels[p_idx] = "person_in_photo"
+                    photo_person_count += 1
+                    changed = True
+                else:
+                    still_unresolved.append(p_idx)
+            unresolved_person_idx = still_unresolved
+
+        real_person_count = len(unresolved_person_idx)
+
+        # Area-ratio signal for downstream classify logic: how big is the largest
+        # "real" person box relative to the whole image. A real person genuinely
+        # posing for a photo usually takes up a meaningful chunk of the frame; a
+        # sliver-sized box left over after containment checks is more often a
+        # residual detection artifact than an actual group-photo subject.
+        real_person_max_area_ratio = 0.0
+        for p_idx in unresolved_person_idx:
+            x1, y1, x2, y2 = bboxes[p_idx]
+            area_ratio = ((x2 - x1) * (y2 - y1)) / image_area
+            real_person_max_area_ratio = max(real_person_max_area_ratio, area_ratio)
+        result["post_processing"]["real_person_max_area_ratio"] = round(real_person_max_area_ratio, 4)
+
         summary = {}
+        for l in refined_labels:
+            if l is None:
+                continue
+            summary[l] = summary.get(l, 0) + 1
+        result["post_processing"]["object_statistics"] = summary
+
+        # Correct caption based on the final person/photo-person mix
+        if photo_person_count > 0 and real_person_count == 0:
+            raw_caption = result["post_processing"]["combined_caption"]["combined"]
+            fixed_caption = re.sub(r"\bA couple standing\b", "A photo of a couple", raw_caption, flags=re.IGNORECASE)
+            fixed_caption = re.sub(r"\bA person standing\b", "A photo of a person", fixed_caption, flags=re.IGNORECASE)
+            fixed_caption = re.sub(r"\bThere are people\b", "There is a picture of people", fixed_caption, flags=re.IGNORECASE)
+            result["post_processing"]["combined_caption"]["combined"] = fixed_caption
+            result["post_processing"]["scene_type"] = "decoration_only_no_real_people"
+        elif photo_person_count > 0 and real_person_count > 0:
+            result["post_processing"]["scene_type"] = "mixed_real_and_photo_people"
+        elif real_person_count > 0:
+            result["post_processing"]["scene_type"] = "real_human_present"
+        else:
+            result["post_processing"]["scene_type"] = "no_people"
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Extraction & Analysis Tasks
+    # ------------------------------------------------------------------
+    def _extract_metadata(self, image_path):
+        meta_info = {"metadata_year": None}
         try:
-            labels = detection["<OD>"]["labels"]
-            for l in labels: summary[l] = summary.get(l, 0) + 1
+            with open(image_path, 'rb') as f:
+                tags = exifread.process_file(f, details=False)
+                if 'EXIF DateTimeOriginal' in tags:
+                    meta_info["metadata_year"] = str(tags['EXIF DateTimeOriginal'])[:4]
+                    return meta_info
+            meta_info["metadata_year"] = str(datetime.datetime.fromtimestamp(os.stat(image_path).st_mtime).year)
         except: pass
-        return summary
+        return meta_info
 
-    def post_process_result(self, result, metadata):
-        """
-        综合 OCR 和 物理元数据。
-        最终 primary_year 优先级：物理元数据年份 > OCR 识别年份
-        """
-        processed = {}
-        processed["combined_caption"] = self.combine_caption(result["captions"])
-        ocr_info = self.extract_ocr_information(
-            result["ocr"].get("plain_ocr", {}),
-            result["ocr"].get("ocr_with_region", {})
-        )
-        processed["ocr_information"] = ocr_info
-        processed["object_statistics"] = self.count_detection(result["detections"]["objects"])
+    def run_task(self, image, task_prompt):
+        inputs = self.processor(text=task_prompt, images=image, return_tensors="pt")
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        if self.device == "cuda": inputs["pixel_values"] = inputs["pixel_values"].to(self.torch_dtype)
         
-        # 核心年份逻辑
-        processed["physical_metadata"] = metadata
-        processed["final_primary_year"] = metadata["metadata_year"] if metadata["metadata_year"] else ocr_info["ocr_primary_year"]
+        with torch.inference_mode():
+            generated_ids = self.model.generate(
+                input_ids=inputs["input_ids"], pixel_values=inputs["pixel_values"],
+                max_new_tokens=1024, num_beams=3
+            )
+        generated_text = self.processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
+        return self.processor.post_process_generation(generated_text, task=task_prompt, image_size=image.size)
 
-        result["post_processing"] = processed
-        return result
-
-    # ------------------------------------------------------------------
-    # Main entry point
-    # ------------------------------------------------------------------
     def analyze_image(self, image_path):
-        # 1. 提取物理元数据 (EXIF / Properties)
         metadata = self._extract_metadata(image_path)
-
         image = Image.open(image_path).convert("RGB")
-        width, height = image.size
-
+        
         result = {
-            "image_information": {
-                "width": width, "height": height,
-                "aspect_ratio": round(width / height, 4),
-                "mode": image.mode,
-                "file_path": image_path
-            },
-            "captions": {}, "ocr": {}, "detections": {}, "regions": {}, "metadata": {}
+            "image_info": {"path": image_path, "size": image.size},
+            "captions": {}, "detections": {}, "post_processing": {}
         }
 
-        logger.info("=" * 60)
-        logger.info(f"START ANALYSIS: {os.path.basename(image_path)}")
-        logger.info("=" * 60)
+        result["captions"]["caption"] = self.run_task(image, "<CAPTION>")
+        result["captions"]["more_detailed"] = self.run_task(image, "<MORE_DETAILED_CAPTION>")
+        result["detections"]["objects"] = self.run_task(image, "<OD>")
 
-        result["captions"]["caption"] = self.safe_task(image, "Caption", "<CAPTION>")
-        result["captions"]["detailed_caption"] = self.safe_task(image, "Detailed Caption", "<DETAILED_CAPTION>")
-        result["captions"]["more_detailed_caption"] = self.safe_task(image, "More Detailed Caption", "<MORE_DETAILED_CAPTION>")
-        result["regions"]["dense_region_caption"] = self.safe_task(image, "Dense Region Caption", "<DENSE_REGION_CAPTION>")
-        result["regions"]["region_proposal"] = self.safe_task(image, "Region Proposal", "<REGION_PROPOSAL>")
-        result["ocr"]["plain_ocr"] = self.safe_task(image, "OCR", "<OCR>")
-        result["ocr"]["ocr_with_region"] = self.safe_task(image, "OCR With Region", "<OCR_WITH_REGION>")
-        result["detections"]["objects"] = self.safe_task(image, "Object Detection", "<OD>")
-
-        result["metadata"] = {
-            "model": MODEL_NAME,
-            "device": self.device,
-            "torch_dtype": str(self.torch_dtype),
-            "executed_tasks": ["CAPTION", "DETAILED_CAPTION", "OCR", "OBJECT_DETECTION"]
-        }
-
-        logger.info("=" * 60)
-        logger.info("POST PROCESSING (Merging OCR + Metadata)")
-        logger.info("=" * 60)
-
-        result = self.post_process_result(result, metadata)
-
-        logger.info(f"FINAL YEAR DETERMINED: {result['post_processing']['final_primary_year']}")
-        logger.info("=" * 60)
-
+        combined_text = result["captions"]["more_detailed"].get("<MORE_DETAILED_CAPTION>", "")
+        result["post_processing"]["combined_caption"] = {"combined": combined_text}
+        
+        result = self.refine_detections_and_caption(result, image)
+        result["post_processing"]["final_year"] = metadata["metadata_year"]
+        
         return result
-
 
 # ------------------------------------------------------------------
-# CLI 入口
+# Main Logic
 # ------------------------------------------------------------------
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("用法: python florence.py <图片路径 或 图片文件夹> [输出文件夹]")
+        print("Usage: python script.py <input_folder_or_file>")
         sys.exit(1)
 
-    input_path = sys.argv[1]
-    # 第二个参数可选：每张图的分析结果 json 存放的文件夹。
-    # 不传的话保持原来写死的默认路径，行为不变。
-    output_dir = sys.argv[2] if len(sys.argv) > 2 else \
-        "C:\\Users\\wkb75\\Documents\\intern cck record\\florence\\output\\florence"
-    IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
+    input_path = sys.argv[1].strip().strip('"')
+
+    # Base output location -> ...\florence\output\florence_output
+    base_output_dir = r"C:\Users\wkb75\Documents\intern cck record\florence\output"
+    output_dir = sys.argv[2].strip().strip('"') if len(sys.argv) > 2 else os.path.join(base_output_dir, "florence_output")
+    os.makedirs(output_dir, exist_ok=True)
 
     analyzer = FlorenceAnalyzer()
 
     if os.path.isdir(input_path):
-        image_files = sorted(f for f in glob.glob(os.path.join(input_path, "*")) if f.lower().endswith(IMAGE_EXTS))
-        if not image_files:
-            print(f"文件夹 {input_path} 内没有找到图片文件"); sys.exit(1)
-
-        os.makedirs(output_dir, exist_ok=True)
-
-        for img_path in image_files:
+        image_exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+        files = [f for f in glob.glob(os.path.join(input_path, "*")) if f.lower().endswith(image_exts)]
+        
+        logger.info(f"Processing folder. Saving results to: {output_dir}")
+        for img_path in sorted(files):
             try:
+                logger.info(f"Analyzing: {os.path.basename(img_path)}")
                 output = analyzer.analyze_image(img_path)
+                
                 out_name = os.path.splitext(os.path.basename(img_path))[0] + ".json"
                 with open(os.path.join(output_dir, out_name), "w", encoding="utf-8") as f:
                     json.dump(output, f, indent=2, ensure_ascii=False)
-                logger.info(f"结果已保存: {out_name}")
             except Exception as e:
-                logger.warning(f"处理 {img_path} 失败: {e}")
+                logger.error(f"Failed to process {img_path}: {e}")
+
     elif os.path.isfile(input_path):
         output = analyzer.analyze_image(input_path)
-        print(json.dumps(output, indent=2, ensure_ascii=False))
+        out_name = os.path.splitext(os.path.basename(input_path))[0] + ".json"
+        with open(os.path.join(output_dir, out_name), "w", encoding="utf-8") as f:
+            json.dump(output, f, indent=2, ensure_ascii=False)
+        logger.info(f"Analysis saved to {output_dir}/{out_name}")
+    else:
+        logger.error(f"Path not found: {input_path}")

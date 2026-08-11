@@ -2,183 +2,140 @@ import argparse
 import json
 import os
 import shutil
-import sys  # 必须导入 sys 模块
+import sys
 
+# 强制 UTF-8 环境
 if sys.platform == 'win32':
     try:
         sys.stdout.reconfigure(encoding='utf-8')
     except AttributeError:
-        # 兼容旧版本 Python
         pass
 
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
-def get_ocr_text(entry):
-    """Concatenate florence/paddle raw text and keywords into one string for substring matching."""
-    ocr = entry.get("ocr", {}) or {}
-    parts = [
-        ocr.get("florence_raw") or "",
-        ocr.get("paddle_raw") or "",
-    ]
-    parts += ocr.get("keywords") or []
-    parts += ocr.get("paddle_high_confidence_lines") or []
-    return " ".join(parts)
-
-
 def get_caption_text(entry):
-    vd = entry.get("visual_description", {}) or {}
     return " ".join([
-        vd.get("short") or "",
-        vd.get("detailed") or "",
-        vd.get("most_detailed") or "",
+        entry.get("caption_short") or "",
+        entry.get("caption_detailed") or "",
+        entry.get("caption_combined") or "",
     ])
 
-
-def get_person_count(entry):
-    scene = entry.get("scene_stats", {}) or {}
-    return (scene.get("person", 0) or 0) + (scene.get("human face", 0) or 0)
-
-
 def classify_one(entry, categories, default_category):
-    """Walk the categories list in order; the first matching rule wins. No scoring."""
-    ocr_text = get_ocr_text(entry).lower()
+    file_name = entry.get("file", "unknown")
     caption_text = get_caption_text(entry).lower()
-    scene = entry.get("scene_stats", {}) or {}
-    person_count = get_person_count(entry)
+    object_statistics = entry.get("object_statistics", {}) or {}
+    
+    # --- 核心诊断逻辑 ---
+    florence_count = entry.get("num_people_detected", 0) or 0
+    yolo_count = entry.get("yolo_person_count") # 注意：如果JSON里是null，这里就是None
+    
+    # 最终判定人数
+    person_count = max(florence_count, yolo_count) if yolo_count is not None else florence_count
+    
+    # 在控制台打印诊断信息，帮你一眼看出数据读到没
+    yolo_str = yolo_count if yolo_count is not None else "MISSING(null)"
+    print(f"  [DEBUG] {file_name} -> Florence:{florence_count}, YOLO:{yolo_str} -> Final:{person_count}")
+    # -------------------
+
+    florence_ratio = entry.get("real_person_max_area_ratio", 0.0) or 0.0
+    yolo_ratio = entry.get("yolo_max_person_area_ratio")
+    area_ratio = max(florence_ratio, yolo_ratio) if yolo_ratio is not None else florence_ratio
+    caption_hints = set(entry.get("caption_hints", []) or [])
 
     for cat in categories:
         name = cat["name"]
+        exclude_hints = set(cat.get("exclude_caption_hints", []) or [])
+        if exclude_hints & caption_hints:
+            continue
+        require_hints = set(cat.get("require_caption_hints", []) or [])
+        if require_hints and not (require_hints & caption_hints):
+            continue
 
-        for kw in cat.get("ocr_keywords", []):
-            if kw.lower() in ocr_text:
-                return name, f"ocr_keyword:{kw}"
+        ocr_kws = cat.get("ocr_keywords", []) or []
+        caption_kws = cat.get("caption_keywords", []) or []
+        scene_objs = cat.get("scene_objects", []) or []
+        content_defined = bool(ocr_kws or caption_kws or scene_objs)
 
-        for kw in cat.get("caption_keywords", []):
-            if kw.lower() in caption_text:
-                return name, f"caption_keyword:{kw}"
-
-        for obj in cat.get("scene_objects", []):
-            if scene.get(obj, 0) > 0:
-                return name, f"scene_object:{obj}"
+        reasons = []
+        content_matched = False
+        if content_defined:
+            for kw in ocr_kws:
+                if kw.lower() in caption_text: # 简化逻辑，只查caption
+                    content_matched = True
+                    reasons.append(f"kw:{kw}")
+                    break
+            if not content_matched:
+                for obj in scene_objs:
+                    if object_statistics.get(obj, 0) > 0:
+                        content_matched = True
+                        reasons.append(f"obj:{obj}")
+                        break
+            if not content_matched:
+                continue
 
         min_p = cat.get("min_person_count")
-        if min_p is not None and person_count >= min_p:
-            return name, f"person_count>={min_p}"
+        max_p = cat.get("max_person_count")
+        min_ratio = cat.get("min_real_person_area_ratio")
+        
+        thresholds_ok = True
+        if min_p is not None and person_count < min_p: thresholds_ok = False
+        if max_p is not None and person_count > max_p: thresholds_ok = False
+        if min_ratio is not None and area_ratio < min_ratio: thresholds_ok = False
 
-    return default_category, "no_rule_matched"
+        if not thresholds_ok:
+            continue
 
+        # 匹配成功
+        res_reason = "+".join(reasons) if reasons else f"count={person_count}"
+        return name, res_reason
 
-def get_year(entry):
-    """
-    重新定义年份获取优先级:
-    1. EXIF (exif_datetime_original)
-    2. OCR (possible_years)
-    3. FileSystem (inferred_year)
-    """
-    time_info = entry.get("time_info", {})
-    ocr_info = entry.get("ocr", {}) or {}
+    return default_category, "no_rule"
 
-    exif_dt = time_info.get("exif_datetime_original")
-    if exif_dt and isinstance(exif_dt, str) and len(exif_dt) >= 4:
-        return exif_dt[:4]
-
-    possible_years = ocr_info.get("possible_years", [])
-    if possible_years and len(possible_years) > 0:
-        return str(possible_years[0])
-
-    return time_info.get("inferred_year") or "unknown_year"
-    
 def find_source_file(images_dir, file_stem):
-    if not images_dir or not os.path.isdir(images_dir):
-        return None
-    exact = os.path.join(images_dir, file_stem)
-    if os.path.isfile(exact):
-        return exact
+    if not images_dir or not os.path.isdir(images_dir): return None
     for fname in os.listdir(images_dir):
         stem, _ext = os.path.splitext(fname)
-        if stem == file_stem:
+        if stem.lower() == file_stem.lower(): # 忽略大小写匹配
             return os.path.join(images_dir, fname)
     return None
 
-
 def main():
-    parser = argparse.ArgumentParser(description="Sort photos into year/category folders")
-    
-    # 这里保持你要求的锁定路径
-    parser.add_argument("--aggregated", 
-                        default=r"C:\Users\wkb75\Documents\intern cck record\florence\output\aggregated_for_llm.json")
-    
-    parser.add_argument("--config", 
-                        default=r"C:\Users\wkb75\Documents\intern cck record\florence\config.json")
-    
-    parser.add_argument("--images-dir", 
-                        default=r"C:\Users\wkb75\Documents\intern cck record\florence\input")
-    
-    parser.add_argument("--output-dir", 
-                        default=r"C:\Users\wkb75\Documents\intern cck record\florence\output\sorted")
-    
-    parser.add_argument("--mode", choices=["copy", "symlink"], default="copy")
-    parser.add_argument("--dry-run", action="store_true")
-    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--aggregated", default=r"C:\Users\wkb75\Documents\intern cck record\florence\output\aggregated_for_llm.json")
+    parser.add_argument("--config", default=r"C:\Users\wkb75\Documents\intern cck record\florence\config.json")
+    parser.add_argument("--images-dir", default=r"C:\Users\wkb75\Documents\intern cck record\florence\input")
+    parser.add_argument("--output-dir", default=r"C:\Users\wkb75\Documents\intern cck record\florence\output\sorted")
     args = parser.parse_args()
+
+    if not os.path.exists(args.aggregated):
+        print(f"错误: 找不到JSON文件 {args.aggregated}")
+        return
 
     entries = load_json(args.aggregated)
     cfg = load_json(args.config)
     categories = cfg.get("categories", [])
     default_category = cfg.get("default_category", "Unknown")
-    path_template = cfg.get("output", {}).get("path_template", "{year}/{category}")
 
+    print(f"开始处理 {len(entries)} 张图片...")
+    
     manifest = []
     for entry in entries:
         file_stem = entry.get("file", "unknown")
-        year = get_year(entry)
         category, reason = classify_one(entry, categories, default_category)
+        
+        print(f"  >> Result: {category} ({reason})")
 
-        record = {
-            "file": file_stem,
-            "year": year,
-            "category": category,
-            "match_reason": reason,
-        }
-        manifest.append(record)
-
-        # 这里增加了编码安全处理，防止打印中文崩溃
-        try:
-            print(f"{file_stem} -> {year}/{category}  (reason: {reason})")
-        except UnicodeEncodeError:
-            print(f"{file_stem} -> {year}/[Chinese Category Name]  (reason: {reason})")
-
-        if args.dry_run:
-            continue
-
-        relative_dir = path_template.format(year=year, category=category)
-        target_dir = os.path.join(args.output_dir, relative_dir)
+        target_dir = os.path.join(args.output_dir, category)
         os.makedirs(target_dir, exist_ok=True)
 
         src = find_source_file(args.images_dir, file_stem)
-        if not src:
-            record["status"] = "source image not found, skipped"
-            continue
+        if src:
+            shutil.copy2(src, os.path.join(target_dir, os.path.basename(src)))
+            manifest.append({"file": file_stem, "category": category})
 
-        dst = os.path.join(target_dir, os.path.basename(src))
-        if args.mode == "copy":
-            shutil.copy2(src, dst)
-        else:
-            if os.path.exists(dst):
-                os.remove(dst)
-            os.symlink(os.path.abspath(src), dst)
-        record["status"] = f"{'copied' if args.mode == 'copy' else 'symlinked'} to {dst}"
-
-    manifest_path = os.path.join(args.output_dir if not args.dry_run else ".", "classify_manifest.json")
-    os.makedirs(os.path.dirname(manifest_path) or ".", exist_ok=True)
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-
-    print("-" * 50)
-    print(f"Processed {len(entries)} images. Manifest saved to: {manifest_path}")
+    print(f"完成！分类结果存放在: {args.output_dir}")
 
 if __name__ == "__main__":
     main()
