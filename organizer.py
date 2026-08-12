@@ -21,7 +21,7 @@ from classifier import classify_one  # noqa: E402
 # ================= CONFIGURATION (默认值，可按需改这几行) =================
 AGGREGATED_JSON_PATH = r"C:\Users\wkb75\Documents\intern cck record\florence\output\aggregated_for_llm.json"
 CONFIG_PATH = r"C:\Users\wkb75\Documents\intern cck record\florence\config.json"
-MANIFEST_PATH = r"C:\Users\wkb75\Documents\intern cck record\florence\output\sorted\classify_manifest.json"
+MANIFEST_PATH = r"C:\Users\wkb75\Documents\intern cck record\florence\output\classify_manifest.json"
 IMAGES_DIR = r"C:\Users\wkb75\Documents\intern cck record\florence\input"
 OUTPUT_ROOT = r"C:\Users\wkb75\Documents\intern cck record\florence\output\organized_photos"
 VALID_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}

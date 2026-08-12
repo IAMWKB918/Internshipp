@@ -1,37 +1,20 @@
 {
-  "_description": "V8 简化版：只按人数/是否摆拍做结构化分类，不再依赖caption关键词猜语义",
-  "output": {
-    "path_template": "{category}"
-  },
-  "default_category": "Unclassified",
+  "default_category": "Distant_People_or_Crowd",
   "categories": [
     {
       "name": "No_People",
-      "_comment": "没检测到人",
       "max_person_count": 0
     },
     {
-      "name": "Individual_Portrait",
-      "_comment": "1-2人且Florence自己判断为摆拍/看镜头，用require_caption_hints过滤掉手/手臂闯入镜头这类假阳性（这类图人数和面积比会像真人像，但从不带posing/looking_at_camera这个hint）",
-      "min_person_count": 1,
-      "max_person_count": 2,
-      "min_real_person_area_ratio": 0.01,
-      "require_caption_hints": ["posing", "looking_at_camera"]
-    },
-    {
       "name": "Group_Photo",
-      "_comment": "3人以上，不区分台上台下",
-      "min_person_count": 3
+      "min_person_count": 6
     },
     {
-      "name": "Distant_People_or_Crowd",
-      "_comment": "有人出现但不满足上面两类的兜底：1-2人但没有摆拍信号（远景/路人/手部误检等）",
+      "name": "Individual_Portrait",
       "min_person_count": 1,
-      "max_real_person_area_ratio": 0.05
-    },
-    {
-      "name": "Unclassified",
-      "_comment": "理论上不会用到，留作保险兜底"
+      "max_person_count": 5,
+      "min_real_person_area_ratio": 0.005,
+      "ocr_keywords": ["man", "woman", "person", "standing", "sitting", "people", "gentleman", "lady", "child", "couple"]
     }
   ]
 }
