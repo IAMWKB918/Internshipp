@@ -230,13 +230,13 @@ def main():
         print(f"[SKIP] 跳过分类，直接读取: {args.manifest}")
         manifest = load_json(args.manifest, "classify_manifest.json")
         if manifest is None:
-            return
+            sys.exit(1)  # 读不到 manifest，别再假装成功退出
     else:
         print(f"Aggregated JSON: {args.aggregated}")
         print(f"Config: {args.config}")
         manifest = run_classification(args.aggregated, args.config, args.manifest)
         if manifest is None:
-            return
+            sys.exit(1)  # 分类失败 (通常是路径不对)，别再假装成功退出
 
     print("=" * 50)
     print(f"Searching in: {args.images_dir}")
@@ -255,6 +255,11 @@ def main():
     print(f"整理完成！成功: {success_count}, 失败: {fail_count}")
     print(f"目标位置: {args.output_root}")
     print("=" * 50)
+
+    if success_count == 0 and fail_count > 0:
+        # 一张都没搬成功，通常代表 --images-dir 或 manifest 里的文件名对不上，
+        # 用非 0 退出码让 main.py 的 pipeline 正确侦测到这一步其实失败了
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-main.py — 精简版 Pipeline (Florence -> MixJSON -> YOLO -> Classifier -> Organizer)
+main.py — 精简版 Pipeline (Florence -> YOLO -> MixJSON -> Classifier -> Organizer)
 """
 
 import argparse
@@ -17,13 +17,13 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 FLORENCE_PY   = SCRIPT_DIR / "florence.py"
+YOLO_PY       = SCRIPT_DIR / "yoloperson.py"
 MIXJSON_PY    = SCRIPT_DIR / "mixjson.py"
-YOLO_PY       = SCRIPT_DIR / "yoloperson.py"   # 新加入的 YOLO 脚本
 CLASSIFIER_PY = SCRIPT_DIR / "classifier.py"
 ORGANIZER_PY  = SCRIPT_DIR / "organizer.py"
 
-DEFAULT_OUTPUT = SCRIPT_DIR / "output"
 DEFAULT_CONFIG = SCRIPT_DIR / "config.json"
+DEFAULT_OUTPUT = SCRIPT_DIR / "output"  # app.py 在多来源合并批次时用来当暂存基底
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,7 +45,6 @@ def run_step(name: str, cmd: list[str]) -> None:
     log.info("  命令: " + " ".join(str(c) for c in cmd))
     t0 = time.time()
 
-    # 子进程执行
     result = subprocess.run(cmd)
 
     elapsed = time.time() - t0
@@ -56,11 +55,11 @@ def run_step(name: str, cmd: list[str]) -> None:
 
 
 def run_pipeline(input_dir: Path, output_dir: Path, config_path: Path) -> None:
-    # 定义中间文件路径
+    # 定义中间文件路径（全部放在 input 文件夹底下新开的 output 子文件夹里）
     florence_dir     = output_dir / "florence"
+    yolo_json        = output_dir / "yolo.json"
     aggregated_json  = output_dir / "aggregated_for_llm.json"
-    sorted_dir       = output_dir / "sorted"
-    manifest_json    = sorted_dir / "classify_manifest.json"
+    manifest_json    = output_dir / "classify_manifest.json"
     organized_dir    = output_dir / "organized_photos"
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -75,41 +74,43 @@ def run_pipeline(input_dir: Path, output_dir: Path, config_path: Path) -> None:
         [sys.executable, str(FLORENCE_PY), str(input_dir), str(florence_dir)],
     )
 
-    # ---- 2. mixjson: 合并 Florence 结果生成基础汇总表 ----
-    run_step(
-        "合并基础 JSON (mixjson)",
-        [
-            sys.executable, str(MIXJSON_PY),
-            "--florence-dir", str(florence_dir),
-            "--output-dir", str(output_dir),
-        ],
-    )
-
-    # ---- 3. YOLO: 补充人数和面积数据 (关键步骤) ----
-    # 它会读取 aggregated_for_llm.json 并修改其中的人数为空的字段
+    # ---- 2. YOLO: 独立跑一遍人数检测，产出自己的 yolo.json ----
     run_step(
         "YOLO 精确人数检测",
         [
             sys.executable, str(YOLO_PY),
-            "--images-dir", str(input_dir),
-            "--aggregated", str(aggregated_json),
+            str(input_dir),
+            "--output-dir", str(output_dir),
             "--conf", "0.25",  # 较低的阈值防止漏人
         ],
     )
 
-    # ---- 4. classifier: 根据含有 YOLO 结果的 JSON 进行分类 ----
+    # ---- 3. mixjson: 合并 Florence + YOLO 结果生成汇总表 ----
+    run_step(
+        "合并汇总 JSON (mixjson)",
+        [
+            sys.executable, str(MIXJSON_PY),
+            "--florence-dir", str(florence_dir),
+            "--yolo-json", str(yolo_json),
+            "--output-dir", str(output_dir),
+        ],
+    )
+
+    # ---- 4. classifier: 根据汇总 JSON 进行分类 ----
     run_step(
         "智能分类归类 (classifier)",
         [
             sys.executable, str(CLASSIFIER_PY),
             "--aggregated", str(aggregated_json),
             "--config", str(config_path),
-            "--images-dir", str(input_dir),
-            "--output-dir", str(sorted_dir),
+            "--output-manifest", str(manifest_json),
         ],
     )
 
     # ---- 5. organizer: 最终物理改名和归档 ----
+    # --skip-classify: classifier 那一步已经分类并写好 manifest 了，这里只负责搬文件，
+    # 不然 organizer.py 会自己用内建的、写死的旧路径再跑一次分类，导致找不到
+    # aggregated_for_llm.json 而静默失败 (退出码却是 0，容易被忽略)。
     run_step(
         "物理改名归档 (organizer)",
         [
@@ -117,24 +118,30 @@ def run_pipeline(input_dir: Path, output_dir: Path, config_path: Path) -> None:
             "--manifest", str(manifest_json),
             "--images-dir", str(input_dir),
             "--output-root", str(organized_dir),
+            "--skip-classify",
         ],
     )
 
     log.info("🎉 流程全部完成！")
+    log.info(f"   输出总目录: {output_dir}")
     log.info(f"   最终照片库: {organized_dir}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="精简版一键 Pipeline: Florence -> MixJSON -> YOLO -> Classifier -> Organizer"
+        description="精简版一键 Pipeline: Florence -> YOLO -> MixJSON -> Classifier -> Organizer"
     )
     parser.add_argument("input", help="要处理的图片文件夹路径")
-    parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="输出根目录")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="输出根目录，默认在 input 文件夹里新开一个 output 子文件夹",
+    )
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="分类规则路径")
     args = parser.parse_args()
 
     input_dir = Path(args.input).resolve()
-    output_dir = Path(args.output).resolve()
+    output_dir = Path(args.output).resolve() if args.output else (input_dir / "output")
     config_path = Path(args.config).resolve()
 
     if not input_dir.is_dir():

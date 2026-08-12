@@ -29,9 +29,15 @@
         .btn-blue { background: #007bff; color: white; }
         .btn-purple { background: #6f42c1; color: white; }
         .btn-green { background: #28a745; color: white; width: 100%; margin-top: 15px; font-size: 18px; }
-        
-        .summary-header { background: #222; padding: 15px; border-radius: 10px 10px 0 0; border-left: 5px solid #28a745; margin-top: 30px; display: none; }
+
+        .error-box { background: #3a1f1f; border-left: 5px solid #dc3545; padding: 12px 15px; border-radius: 6px; margin-top: 15px; font-size: 13px; color: #ffb3b3; display: none; }
+
         .summary-area { display: none; }
+        .batch-block { background: #1e1e1e; border-radius: 10px; margin-top: 20px; overflow: hidden; }
+        .batch-header { background: #222; padding: 15px; border-left: 5px solid #28a745; display: flex; justify-content: space-between; align-items: center; }
+        .batch-header .batch-name { font-weight: bold; font-size: 15px; }
+        .batch-header .batch-path { font-size: 12px; color: #999; display: block; margin-top: 2px; }
+        .batch-body { padding: 15px; }
         .year-block { background: #222; padding: 15px; border-radius: 10px; margin-top: 10px; }
         .year-title { font-size: 18px; font-weight: bold; color: #ffc107; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
         .summary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; }
@@ -66,12 +72,9 @@
             <div id="result-overlay"></div>
         </div>
 
-        <div id="summary-header" class="summary-header">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <span><b>Path:</b> <i id="output-path-text"></i></span>
-                <button onclick="openLocalFolder('root')" style="background:#28a745; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer;">📂 Main Folder</button>
-            </div>
-        </div>
+        <div id="error-box" class="error-box"></div>
+
+        <!-- 每个来源 (资料夹/上传文件) 各自完整跑一次，各自一个区块、各自的 output 路径 -->
         <div id="summary-area" class="summary-area"></div>
     </div>
 
@@ -112,10 +115,11 @@
             const runBtn = document.getElementById('run-btn');
             runBtn.disabled = true;
             const statusText = document.getElementById('status-text');
-            statusText.innerText = "Processing on AI Engine...";
-            
-            document.getElementById('summary-header').style.display = 'none';
+            statusText.innerText = "Processing on AI Engine... (each source runs separately, this can take a while)";
+
             document.getElementById('summary-area').style.display = 'none';
+            document.getElementById('summary-area').innerHTML = '';
+            document.getElementById('error-box').style.display = 'none';
 
             const res = await fetch('/run_tasks', {
                 method: 'POST',
@@ -156,58 +160,80 @@
             imgElement.style.display = 'none'; 
             statusText.style.display = 'block';
             statusText.innerText = "Batch Complete!";
-            
-            showSummary(data.summary, data.output_path);
+
+            if (data.errors && data.errors.length) {
+                const box = document.getElementById('error-box');
+                box.style.display = 'block';
+                box.innerHTML = "⚠️ 以下来源处理失败：<br>" + data.errors.join("<br>");
+            }
+
+            showBatches(data.batches || []);
             taskQueue = []; renderTasks();
+
             runBtn.disabled = false;
-
-                runBtn.disabled = false;
-                runBtn.style.display = 'none'; // 任务完成后隐藏“开始”按钮
-                document.getElementById('reset-btn').style.display = 'block'; 
-
+            runBtn.style.display = 'none'; // 任务完成后隐藏“开始”按钮
+            document.getElementById('reset-btn').style.display = 'block';
         }
 
-        function showSummary(summary, outputPath) {
-            document.getElementById('summary-header').style.display = 'block';
-            document.getElementById('summary-area').style.display = 'block';
-            document.getElementById('output-path-text').innerText = outputPath;
+        // 每个来源 (资料夹) 各自跑完各自一个区块，各自的 output 路径、各自开资料夹
+        function showBatches(batches) {
             const area = document.getElementById('summary-area');
+            area.style.display = 'block';
             area.innerHTML = "";
 
-            // summary 结构: { "2023": { "Meeting": 5, "Event": 2 }, "2024": {...} }
-            const years = Object.keys(summary).sort().reverse();
-            if (years.length === 0) {
+            if (batches.length === 0) {
                 area.innerHTML = `<div style="color:#888;padding:15px;">No files were sorted.</div>`;
                 return;
             }
 
-            for (const year of years) {
-                const categories = summary[year];
-                const yearTotal = Object.values(categories).reduce((a, b) => a + b, 0);
+            for (const batch of batches) {
+                const years = Object.keys(batch.summary).sort().reverse();
 
-                let cardsHtml = "";
-                for (const category in categories) {
-                    const count = categories[category];
-                    cardsHtml += `
-                        <div class="card">
-                            <p>${category}</p>
-                            <h3>${count}</h3>
-                            <button onclick="openLocalFolder('${year}/${category}')">📂 View Files</button>
-                        </div>`;
+                let yearsHtml = "";
+                if (years.length === 0) {
+                    yearsHtml = `<div style="color:#888;padding:10px;">No files were sorted in this source.</div>`;
+                } else {
+                    for (const year of years) {
+                        const categories = batch.summary[year];
+                        const yearTotal = Object.values(categories).reduce((a, b) => a + b, 0);
+
+                        let cardsHtml = "";
+                        for (const category in categories) {
+                            const count = categories[category];
+                            cardsHtml += `
+                                <div class="card">
+                                    <p>${category}</p>
+                                    <h3>${count}</h3>
+                                    <button onclick="openLocalFolder(${batch.batch_index}, '${year}/${category}')">📂 View Files</button>
+                                </div>`;
+                        }
+
+                        yearsHtml += `
+                            <div class="year-block">
+                                <div class="year-title">
+                                    <span>📅 ${year}</span>
+                                    <span style="font-size:13px;color:#aaa;">${yearTotal} photos</span>
+                                </div>
+                                <div class="summary-grid">${cardsHtml}</div>
+                            </div>`;
+                    }
                 }
 
                 area.innerHTML += `
-                    <div class="year-block">
-                        <div class="year-title">
-                            <span>📅 ${year}</span>
-                            <span style="font-size:13px;color:#aaa;">${yearTotal} photos</span>
+                    <div class="batch-block">
+                        <div class="batch-header">
+                            <div>
+                                <span class="batch-name">📁 ${batch.name}</span>
+                                <span class="batch-path">${batch.output_path}</span>
+                            </div>
+                            <button onclick="openLocalFolder(${batch.batch_index}, 'root')" style="background:#28a745; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer;">📂 Main Folder</button>
                         </div>
-                        <div class="summary-grid">${cardsHtml}</div>
+                        <div class="batch-body">${yearsHtml}</div>
                     </div>`;
             }
         }
 
-        async function openLocalFolder(target) { await fetch(`/open_folder/${target}`); }
+        async function openLocalFolder(batchIndex, target) { await fetch(`/open_folder/${batchIndex}/${target}`); }
 
         function resetSystem() {
     // 做法 1：直接刷新网页（最推荐，简单直接）

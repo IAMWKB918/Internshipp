@@ -4,7 +4,8 @@ import os
 import re
 
 # ==================== Path configuration ====================
-FLORENCE_DIR = r"C:\Users\wkb75\Documents\intern cck record\florence\output\florence_output"
+FLORENCE_DIR = r"C:\Users\wkb75\Documents\intern cck record\florence\output\florence"
+YOLO_JSON = r"C:\Users\wkb75\Documents\intern cck record\florence\output\yolo.json"
 OUTPUT_DIR = r"C:\Users\wkb75\Documents\intern cck record\florence\output"
 
 # Heuristic keyword patterns to surface gaze / motion cues that Florence
@@ -18,8 +19,9 @@ GAZE_PATTERNS = {
 }
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Aggregate Florence results for LLM classification.")
+    parser = argparse.ArgumentParser(description="Aggregate Florence + YOLO results for LLM classification.")
     parser.add_argument("--florence-dir", default=FLORENCE_DIR)
+    parser.add_argument("--yolo-json", default=YOLO_JSON)
     parser.add_argument("--output-dir", default=OUTPUT_DIR)
     return parser.parse_args()
 
@@ -40,10 +42,30 @@ def summarize_people(object_statistics: dict):
     people_keys = ("person", "man", "woman")
     return sum(int(v) for k, v in (object_statistics or {}).items() if k in people_keys)
 
+def load_yolo_results(yolo_json_path):
+    if not os.path.exists(yolo_json_path):
+        print(f"[warn] YOLO results not found: {yolo_json_path}. Skipping YOLO merge.")
+        return {}
+    with open(yolo_json_path, 'r', encoding='utf-8') as f:
+        yolo_raw = json.load(f)
+    return {k.lower(): v for k, v in yolo_raw.items()}
+
+def lookup_yolo(yolo_results_lower, stem_lower):
+    y = yolo_results_lower.get(stem_lower)
+    if y is None and "_" in stem_lower:
+        parts = stem_lower.split("_")
+        if parts[-1].isdigit():
+            base_name = "_".join(parts[:-1])
+            y = yolo_results_lower.get(base_name)
+    return y
+
 def main():
     args = parse_args()
 
+    yolo_results_lower = load_yolo_results(args.yolo_json)
+
     all_data = []
+    yolo_matched = 0
 
     for json_file in sorted(os.listdir(args.florence_dir)):
         if not json_file.endswith(".json"):
@@ -88,6 +110,20 @@ def main():
             "object_statistics": object_statistics,
             "detected_labels": detected_labels,
         }
+
+        y = lookup_yolo(yolo_results_lower, img_stem)
+        if y is None:
+            profile["yolo_person_count"] = None
+            profile["yolo_max_person_area_ratio"] = None
+            profile["yolo_confidences"] = []
+            profile["has_people_union"] = num_people > 0
+        else:
+            yolo_matched += 1
+            profile["yolo_person_count"] = y["yolo_person_count"]
+            profile["yolo_max_person_area_ratio"] = y["yolo_max_person_area_ratio"]
+            profile["yolo_confidences"] = y.get("yolo_confidences", [])
+            profile["has_people_union"] = (num_people > 0) or (y["yolo_person_count"] > 0)
+
         all_data.append(profile)
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -95,7 +131,17 @@ def main():
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(all_data, f, indent=2, ensure_ascii=False)
 
-    print(f"Aggregation complete. Processed {len(all_data)} files.")
+    total = len(all_data)
+    florence_zero = sum(1 for e in all_data if (e.get("num_people_detected", 0) or 0) == 0)
+    union_zero = sum(1 for e in all_data if not e.get("has_people_union", False))
+
+    print(f"Aggregation complete. Processed {total} files.")
+    print(f"[merge] {yolo_matched}/{total} records successfully matched with YOLO results.")
+    print("-" * 50)
+    print(f"Total files: {total}")
+    print(f"Florence detected 0 people: {florence_zero}")
+    print(f"Union (Florence or YOLO) detected 0 people: {union_zero}  <- Use this field to minimize false negatives.")
+    print(f"Output saved to: {out_path}")
 
 if __name__ == "__main__":
     main()
