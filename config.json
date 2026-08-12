@@ -7,13 +7,13 @@
     },
     {
       "name": "Group_Photo",
-      "min_person_count": 6
+      "min_person_count": 5
     },
     {
       "name": "Individual_Portrait",
       "min_person_count": 1,
-      "max_person_count": 5,
-      "min_real_person_area_ratio": 0.005,
+      "max_person_count": 4,
+      "min_real_person_area_ratio": 0.01,
       "ocr_keywords": ["man", "woman", "person", "standing", "sitting", "people", "gentleman", "lady", "child", "couple"]
     }
   ]

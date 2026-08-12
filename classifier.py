@@ -30,26 +30,45 @@ def classify_one(entry, categories, default_category):
     # --- 核心诊断逻辑 ---
     florence_count = entry.get("num_people_detected", 0) or 0
     yolo_count = entry.get("yolo_person_count") # 注意：如果JSON里是null，这里就是None
-    person_count = max(florence_count, yolo_count) if yolo_count is not None else florence_count
+    yolo_raw_count = entry.get("yolo_raw_person_count") # 新欄位：YOLO 過濾肢體碎片前的原始偵測數
+
+    # 人數判定：YOLO 有資料就完全信任 YOLO（pose 版已經濾過肢體碎片，比 Florence caption 準）
+    # 不再跟 florence_count 取 max，否則 Florence 幻覺出的人數又會把已濾掉的肢體碎片撈回來
+    person_count = yolo_count if yolo_count is not None else florence_count
 
     # 最终判定人数
     limb_kws = ['arm', 'hand', 'finger', 'leg', 'foot', 'thumb', 'wrist', 'elbow', 'nail', 'portion of']
     # 完整性特徵詞 (身份/頭部)
     identity_kws = ['face', 'head', 'portrait', 'man', 'woman', 'lady', 'gentleman', 'boy', 'girl', 'standing', 'sitting', 'posing', 'walking']
     
-    # 判定是否為「純肢體零件」
+    # 判定是否為「純肢體零件」(caption 文字訊號，作為輔助/備援)
     has_limb = any(kw in caption_text for kw in limb_kws)
     has_identity = any(kw in caption_text for kw in identity_kws) or (object_statistics.get("human face", 0) > 0)
-    
-    # 如果描述中只有肢體詞，卻完全沒提到身份詞或臉，則判定為「零件」，直接歸類到 Default
-    if has_limb and not has_identity:
-        print(f"  [DEBUG] {file_name} -> 判定為肢體零件 (Limb detected, no identity) -> 跳過 Portrait")
-        return default_category, "body_part_detected"
+    caption_body_part_only = has_limb and not has_identity
+
+    # 判定是否為「純肢體零件」(YOLO 訊號，主要依據)
+    # YOLO 有偵測到東西 (raw > 0)，但過濾肢體碎片後confirmed人數是0 -> 代表那些偵測只是手/腳等局部
+    yolo_body_part_only = (
+        yolo_raw_count is not None and yolo_count is not None
+        and yolo_raw_count > 0 and yolo_count == 0
+    )
+
+    # 只要 YOLO 或 caption 任一訊號判定為肢體零件，就直接歸類到 Default，不進 Portrait
+    if yolo_body_part_only or caption_body_part_only:
+        if yolo_body_part_only and caption_body_part_only:
+            reason = "body_part_detected(yolo+caption)"
+        elif yolo_body_part_only:
+            reason = f"body_part_detected(yolo_raw={yolo_raw_count},filtered=0)"
+        else:
+            reason = "body_part_detected(caption_only)"
+        print(f"  [DEBUG] {file_name} -> 判定為肢體零件 ({reason}) -> 跳過 Portrait")
+        return default_category, reason
     # -------------------
 
     florence_ratio = entry.get("real_person_max_area_ratio", 0.0) or 0.0
     yolo_ratio = entry.get("yolo_max_person_area_ratio")
-    area_ratio = max(florence_ratio, yolo_ratio) if yolo_ratio is not None else florence_ratio
+    # 同理：YOLO 有資料時直接採用 YOLO 的面積比例（已排除肢體碎片框），不跟 florence 取 max
+    area_ratio = yolo_ratio if (yolo_count is not None and yolo_ratio is not None) else florence_ratio
     caption_hints = set(entry.get("caption_hints", []) or [])
 
     for cat in categories:

@@ -114,15 +114,23 @@ def main():
         y = lookup_yolo(yolo_results_lower, img_stem)
         if y is None:
             profile["yolo_person_count"] = None
+            profile["yolo_raw_person_count"] = None
             profile["yolo_max_person_area_ratio"] = None
             profile["yolo_confidences"] = []
             profile["has_people_union"] = num_people > 0
+            profile["yolo_body_part_only"] = False
         else:
             yolo_matched += 1
-            profile["yolo_person_count"] = y["yolo_person_count"]
+            yolo_person_count = y["yolo_person_count"]
+            # 新欄位：YOLO 在過濾肢體碎片(手/腳等低信心局部偵測)之前的原始偵測數。
+            # raw > 0 但 person_count == 0，代表 YOLO 偵測到東西但判定只是身體局部，不算一個完整的人。
+            yolo_raw_person_count = y.get("yolo_raw_person_count", yolo_person_count)
+            profile["yolo_person_count"] = yolo_person_count
+            profile["yolo_raw_person_count"] = yolo_raw_person_count
             profile["yolo_max_person_area_ratio"] = y["yolo_max_person_area_ratio"]
             profile["yolo_confidences"] = y.get("yolo_confidences", [])
-            profile["has_people_union"] = (num_people > 0) or (y["yolo_person_count"] > 0)
+            profile["has_people_union"] = (num_people > 0) or (yolo_person_count > 0)
+            profile["yolo_body_part_only"] = (yolo_raw_person_count > 0) and (yolo_person_count == 0)
 
         all_data.append(profile)
 
@@ -134,6 +142,7 @@ def main():
     total = len(all_data)
     florence_zero = sum(1 for e in all_data if (e.get("num_people_detected", 0) or 0) == 0)
     union_zero = sum(1 for e in all_data if not e.get("has_people_union", False))
+    body_part_only = sum(1 for e in all_data if e.get("yolo_body_part_only", False))
 
     print(f"Aggregation complete. Processed {total} files.")
     print(f"[merge] {yolo_matched}/{total} records successfully matched with YOLO results.")
@@ -141,6 +150,7 @@ def main():
     print(f"Total files: {total}")
     print(f"Florence detected 0 people: {florence_zero}")
     print(f"Union (Florence or YOLO) detected 0 people: {union_zero}  <- Use this field to minimize false negatives.")
+    print(f"YOLO flagged as body-part-only (raw>0 but filtered person_count=0): {body_part_only}  <- These should NOT land in Individual_Portrait.")
     print(f"Output saved to: {out_path}")
 
 if __name__ == "__main__":
