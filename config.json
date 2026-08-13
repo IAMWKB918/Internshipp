@@ -5,6 +5,12 @@
       "name": "No_People",
       "max_person_count": 0
     },
+     {
+      "name": "Award_Ceremony", 
+      "min_person_count": 1,
+      "caption_keywords": ["holding", "cheque", "award", "trophy", "pennant", "poster", "certificate", "medal", "stage", "ceremony", "commemorative", "banner" ],
+      "use_clip_verify": true 
+    },
     {
       "name": "Group_Photo",
       "min_person_count": 5

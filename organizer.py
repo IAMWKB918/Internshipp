@@ -99,7 +99,7 @@ def apply_cluster_consistency(results, entries, config):
     return results
 
 
-def run_classification(aggregated_path, config_path, manifest_out_path):
+def run_classification(aggregated_path, config_path, manifest_out_path, images_dir):
     entries = load_json(aggregated_path, "aggregated_for_llm.json")
     config = load_json(config_path, "config.json")
     if entries is None or config is None:
@@ -111,7 +111,7 @@ def run_classification(aggregated_path, config_path, manifest_out_path):
     manifest = []
     for entry in entries:
         file_stem = entry.get("file", "unknown")
-        category, reason = classify_one(entry, categories, default_category)
+        category, reason = classify_one(entry, categories, default_category, images_dir)
         manifest.append({
             "file": file_stem,
             "category": category,
@@ -234,7 +234,7 @@ def main():
     else:
         print(f"Aggregated JSON: {args.aggregated}")
         print(f"Config: {args.config}")
-        manifest = run_classification(args.aggregated, args.config, args.manifest)
+        manifest = run_classification(args.aggregated, args.config, args.manifest, args.images_dir)
         if manifest is None:
             sys.exit(1)  # 分类失败 (通常是路径不对)，别再假装成功退出
 

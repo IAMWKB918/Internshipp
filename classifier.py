@@ -1,8 +1,10 @@
 import argparse
 import json
 import os
-import shutil
 import sys
+import torch
+import clip
+from PIL import Image
 
 # 强制 UTF-8 环境
 if sys.platform == 'win32':
@@ -10,6 +12,54 @@ if sys.platform == 'win32':
         sys.stdout.reconfigure(encoding='utf-8')
     except AttributeError:
         pass
+
+# 全局變量，延遲加載模型
+CLIP_MODEL = None
+CLIP_PREPROCESS = None
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+def load_clip():
+    global CLIP_MODEL, CLIP_PREPROCESS
+    if CLIP_MODEL is None:
+        print(f"  [System] Loading CLIP model on {DEVICE}...")
+        # 使用 ViT-B/32，平衡速度與精度
+        CLIP_MODEL, CLIP_PREPROCESS = clip.load("ViT-B/32", device=DEVICE)
+
+def run_clip_verify(image_path, category_name):
+    """
+    使用 CLIP 判定圖片內容是否真的符合該分類。
+    """
+    load_clip()
+    try:
+        image = CLIP_PREPROCESS(Image.open(image_path)).unsqueeze(0).to(DEVICE)
+        
+        if category_name == "Award_Ceremony":
+            # 優化後的 Prompts：讓正向描述更具體，負向描述涵蓋更多日常場景
+            text_descriptions = [
+                "a photo of people holding a cheque, trophy, certificate, poster, or prize banner", 
+                "a photo of people standing or sitting normally without any award or banner",
+                "a photo of people holding food, drinks, bags, microphone, tissues,files or mobile phones"
+            ]
+        else:
+            return True, "no_specific_clip_rules"
+
+        text_tokens = clip.tokenize(text_descriptions).to(DEVICE)
+
+        with torch.no_grad():
+            logits_per_image, _ = CLIP_MODEL(image, text_tokens)
+            probs = logits_per_image.softmax(dim=-1).cpu().numpy().tolist()[0]
+
+        # 判定邏輯：
+        # probs[0] 是獎項類的分數
+        # 提高閾值到 0.55 或 0.6 可以讓抓取更嚴謹
+        is_award = probs[0] > 0.6
+        
+        status = "CONFIRMED" if is_award else "REJECTED"
+        return is_award, f"clip_{status}(pos:{probs[0]:.2f}, neg:{probs[1]+probs[2]:.2f})"
+            
+    except Exception as e:
+        print(f"  [Error] CLIP processing failed for {image_path}: {e}")
+        return False, "clip_error"
 
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -22,93 +72,44 @@ def get_caption_text(entry):
         entry.get("caption_combined") or "",
     ])
 
-def classify_one(entry, categories, default_category):
+def find_source_file(images_dir, file_stem):
+    if not images_dir or not os.path.isdir(images_dir): return None
+    for ext in ['.jpg', '.jpeg', '.png', '.JPG', '.PNG', '.JPEG']:
+        path = os.path.join(images_dir, file_stem + ext)
+        if os.path.exists(path):
+            return path
+    return None
+
+def classify_one(entry, categories, default_category, images_dir):
     file_name = entry.get("file", "unknown")
     caption_text = get_caption_text(entry).lower()
-    object_statistics = entry.get("object_statistics", {}) or {}
     
-    # --- 核心诊断逻辑 ---
+    # --- 基礎人數判定 ---
     florence_count = entry.get("num_people_detected", 0) or 0
-    yolo_count = entry.get("yolo_person_count") # 注意：如果JSON里是null，这里就是None
-    yolo_raw_count = entry.get("yolo_raw_person_count") # 新欄位：YOLO 過濾肢體碎片前的原始偵測數
-
-    # 人數判定：YOLO 有資料就完全信任 YOLO（pose 版已經濾過肢體碎片，比 Florence caption 準）
-    # 不再跟 florence_count 取 max，否則 Florence 幻覺出的人數又會把已濾掉的肢體碎片撈回來
+    yolo_count = entry.get("yolo_person_count")
+    yolo_raw_count = entry.get("yolo_raw_person_count")
     person_count = yolo_count if yolo_count is not None else florence_count
 
-    # 最终判定人数
+    # 肢體零件過濾邏輯
     limb_kws = ['arm', 'hand', 'finger', 'leg', 'foot', 'thumb', 'wrist', 'elbow', 'nail', 'portion of']
-    # 完整性特徵詞 (身份/頭部)
     identity_kws = ['face', 'head', 'portrait', 'man', 'woman', 'lady', 'gentleman', 'boy', 'girl', 'standing', 'sitting', 'posing', 'walking']
-    
-    # 判定是否為「純肢體零件」(caption 文字訊號，作為輔助/備援)
-    has_limb = any(kw in caption_text for kw in limb_kws)
-    has_identity = any(kw in caption_text for kw in identity_kws) or (object_statistics.get("human face", 0) > 0)
-    caption_body_part_only = has_limb and not has_identity
+    caption_body_part_only = any(kw in caption_text for kw in limb_kws) and not any(kw in caption_text for kw in identity_kws)
+    yolo_body_part_only = (yolo_raw_count is not None and yolo_count == 0 and yolo_raw_count > 0)
 
-    # 判定是否為「純肢體零件」(YOLO 訊號，主要依據)
-    # YOLO 有偵測到東西 (raw > 0)，但過濾肢體碎片後confirmed人數是0 -> 代表那些偵測只是手/腳等局部
-    yolo_body_part_only = (
-        yolo_raw_count is not None and yolo_count is not None
-        and yolo_raw_count > 0 and yolo_count == 0
-    )
-
-    # 只要 YOLO 或 caption 任一訊號判定為肢體零件，就直接歸類到 Default，不進 Portrait
     if yolo_body_part_only or caption_body_part_only:
-        if yolo_body_part_only and caption_body_part_only:
-            reason = "body_part_detected(yolo+caption)"
-        elif yolo_body_part_only:
-            reason = f"body_part_detected(yolo_raw={yolo_raw_count},filtered=0)"
-        else:
-            reason = "body_part_detected(caption_only)"
-        print(f"  [DEBUG] {file_name} -> 判定為肢體零件 ({reason}) -> 跳過 Portrait")
-        return default_category, reason
-    # -------------------
+        return default_category, "body_part_detected"
 
-    florence_ratio = entry.get("real_person_max_area_ratio", 0.0) or 0.0
-    yolo_ratio = entry.get("yolo_max_person_area_ratio")
-    # 同理：YOLO 有資料時直接採用 YOLO 的面積比例（已排除肢體碎片框），不跟 florence 取 max
-    area_ratio = yolo_ratio if (yolo_count is not None and yolo_ratio is not None) else florence_ratio
-    caption_hints = set(entry.get("caption_hints", []) or [])
+    area_ratio = entry.get("yolo_max_person_area_ratio") or entry.get("real_person_max_area_ratio", 0.0)
 
+    # --- 遍歷分類規則 ---
     for cat in categories:
         name = cat["name"]
         
-        exclude_kws = cat.get("exclude_caption_hints", []) or []
-        if any(kw.lower() in caption_text for kw in exclude_kws):
-            continue # 如果描述裡提到 arm, hand 等，直接跳過這個分類
-
-        exclude_hints = set(cat.get("exclude_caption_hints", []) or [])
-        if any(hint.lower() in caption_text for hint in exclude_hints):
-            continue
-        if exclude_hints & caption_hints:
-            continue
-        require_hints = set(cat.get("require_caption_hints", []) or [])
-        if require_hints and not (require_hints & caption_hints):
-            continue
-
-        ocr_kws = cat.get("ocr_keywords", []) or []
-        caption_kws = cat.get("caption_keywords", []) or []
-        scene_objs = cat.get("scene_objects", []) or []
-        content_defined = bool(ocr_kws or caption_kws or scene_objs)
-
-        reasons = []
-        content_matched = False
-        if content_defined:
-            for kw in ocr_kws:
-                if kw.lower() in caption_text: # 简化逻辑，只查caption
-                    content_matched = True
-                    reasons.append(f"kw:{kw}")
-                    break
-            if not content_matched:
-                for obj in scene_objs:
-                    if object_statistics.get(obj, 0) > 0:
-                        content_matched = True
-                        reasons.append(f"obj:{obj}")
-                        break
-            if not content_matched:
-                continue
-
+        # 關鍵詞匹配 (增加觸發機率)
+        target_kws = cat.get("caption_keywords", []) or cat.get("ocr_keywords", [])
+        kw_matched = any(kw.lower() in caption_text for kw in target_kws) if target_kws else True
+        
+        # 人數與面積閾值判定
         min_p = cat.get("min_person_count")
         max_p = cat.get("max_person_count")
         min_ratio = cat.get("min_real_person_area_ratio")
@@ -118,28 +119,30 @@ def classify_one(entry, categories, default_category):
         if max_p is not None and person_count > max_p: thresholds_ok = False
         if min_ratio is not None and area_ratio < min_ratio: thresholds_ok = False
 
-        if not thresholds_ok:
-            continue
+        if kw_matched and thresholds_ok:
+            # --- CLIP 二次視覺驗證 ---
+            if cat.get("use_clip_verify"):
+                full_img_path = find_source_file(images_dir, file_name)
+                if full_img_path:
+                    # 修正後的調用行：
+                    is_valid, clip_detail = run_clip_verify(full_img_path, name)
+                    if is_valid:
+                        return name, clip_detail
+                    else:
+                        print(f"  [CLIP Skip] {file_name} rejected by CLIP: {clip_detail}")
+                        continue # CLIP 判定不是獎項，流向下一個分類規則
+                else:
+                    print(f"  [Warning] Image not found for CLIP: {file_name}")
 
-        # 匹配成功
-        res_reason = "+".join(reasons) if reasons else f"count={person_count}"
-        return name, res_reason
+            return name, f"rule_matched(count={person_count})"
 
     return default_category, "no_rule"
 
-def find_source_file(images_dir, file_stem):
-    if not images_dir or not os.path.isdir(images_dir): return None
-    for fname in os.listdir(images_dir):
-        stem, _ext = os.path.splitext(fname)
-        if stem.lower() == file_stem.lower(): # 忽略大小写匹配
-            return os.path.join(images_dir, fname)
-    return None
-
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--images-dir", default=r"C:\Users\wkb75\Documents\intern cck record\florence\input")
     parser.add_argument("--aggregated", default=r"C:\Users\wkb75\Documents\intern cck record\florence\output\aggregated_for_llm.json")
     parser.add_argument("--config", default=r"C:\Users\wkb75\Documents\intern cck record\florence\config.json")
-    # 修改輸出路徑，現在只輸出一個 json 結果文件
     parser.add_argument("--output-manifest", default=r"C:\Users\wkb75\Documents\intern cck record\florence\output\classify_manifest.json")
     args = parser.parse_args()
 
@@ -157,23 +160,21 @@ def main():
     manifest = []
     for entry in entries:
         file_stem = entry.get("file", "unknown")
-        # 這裡只進行邏輯判斷
-        category, reason = classify_one(entry, categories, default_category)
+        category, reason = classify_one(entry, categories, default_category, args.images_dir)
         
         print(f"  [RESULT] {file_stem} -> {category} ({reason})")
 
-        # 只記錄結果，不進行 os.makedirs 或 shutil.copy
         manifest.append({
             "file": file_stem, 
             "category": category,
             "reason": reason
         })
 
-    # 將結果保存為 JSON，供 organizer.py 使用
     os.makedirs(os.path.dirname(args.output_manifest), exist_ok=True)
     with open(args.output_manifest, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
 
     print(f"All done, New Json at : {args.output_manifest}")
+
 if __name__ == "__main__":
     main()
