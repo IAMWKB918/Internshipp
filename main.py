@@ -74,7 +74,6 @@ def run_pipeline(input_dir: Path, output_dir: Path, config_path: Path) -> None:
         [sys.executable, str(FLORENCE_PY), str(input_dir), str(florence_dir)],
     )
 
-    # ---- 2. YOLO: 独立跑一遍人数检测，产出自己的 yolo.json ----
     run_step(
         "YOLO 精确人数检测",
         [
@@ -104,6 +103,8 @@ def run_pipeline(input_dir: Path, output_dir: Path, config_path: Path) -> None:
             "--aggregated", str(aggregated_json),
             "--config", str(config_path),
             "--output-manifest", str(manifest_json),
+            "--images-dir", str(input_dir),  # <--- 必須加上這一行，讓 CLIP 找到圖
+
         ],
     )
 

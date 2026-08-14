@@ -8,7 +8,28 @@
      {
       "name": "Award_Ceremony", 
       "min_person_count": 1,
-      "caption_keywords": ["holding", "cheque", "award", "trophy", "pennant", "poster", "certificate", "medal", "stage", "ceremony", "commemorative", "banner" ],
+      "caption_keywords": ["holding", "stage", "check", "cheque", "award", "trophy", "pennant", "poster", "certificate", "medal", "ceremony", "commemorative", "banner"],
+
+      "exclude_keywords": [
+        "in front of stage", "guitar", "violin", "piano", "drum", "microphone", "instrument",
+        "phone", "cellphone", "smartphone", "mobile phone",
+        "plate", "bowl", "dish", "tableware", "cutlery", "spoon", "fork", 
+        "chopstick", "sign"
+      ],
+
+      "exclude_override_keywords": [
+        "large check", "check", "cheque", "trophy", "medal", "certificate", "plaque"
+      ],
+
+      "skip_clip_keywords": ["standing on stage", "on stage"],
+
+      "clip_positive_keywords": [
+        "trophy", "certificate", "medal", "podium", "stage", "banner", "cheque", "plaque"
+      ],
+      "clip_negative_keywords": [
+        "musical instrument", "smartphone", "plate of food", "tableware"
+      ],
+
       "use_clip_verify": true 
     },
     {

@@ -351,7 +351,7 @@ if __name__ == "__main__":
 
     # Base output location -> ...\florence\output\florence_output
     base_output_dir = r"C:\Users\wkb75\Documents\intern cck record\florence\output"
-    output_dir = sys.argv[2].strip().strip('"') if len(sys.argv) > 2 else os.path.join(base_output_dir, "florence_output")
+    output_dir = sys.argv[2].strip().strip('"') if len(sys.argv) > 2 else os.path.join(base_output_dir, "florence")
     os.makedirs(output_dir, exist_ok=True)
 
     analyzer = FlorenceAnalyzer()
