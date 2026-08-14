@@ -2,11 +2,17 @@
   "default_category": "Distant_People_or_Crowd",
   "categories": [
     {
-      "name": "No_People",
-      "max_person_count": 0
+      "name": "Ship",
+      "bypass_only": true,
+      "skip_clip_keywords": [
+        "ship", "boat", "vessel", "yacht", "ferry", "canoe", "kayak", "submarine",
+        "cruise ship", "cargo ship", "warship", "battleship",
+        "sailboat", "sailing boat", "speedboat", "houseboat", "tugboat",
+        "rowboat", "lifeboat", "fishing boat", "gondola", "sampan"
+      ]
     },
-     {
-      "name": "Award_Ceremony", 
+    {
+      "name": "Award_Ceremony",
       "min_person_count": 1,
       "caption_keywords": ["holding", "stage", "check", "cheque", "award", "trophy", "pennant", "poster", "certificate", "medal", "ceremony", "commemorative", "banner"],
 
@@ -31,6 +37,35 @@
       ],
 
       "use_clip_verify": true 
+    },
+    {
+      "name": "Award_CloseUp",
+      "max_person_count": 0,
+      "caption_keywords": ["framed picture", "award", "trophy", "pennant", "poster", "certificate", "medal", "commemorative", "banner", "check", "cheque","clear glass award", "glass award", "crystal award", "plaque"],
+
+      "exclude_keywords": [
+        "guitar", "violin", "piano", "drum", "microphone", "instrument",
+        "phone", "cellphone", "smartphone", "mobile phone",
+        "plate", "bowl", "dish", "tableware", "cutlery", "spoon", "fork",
+        "chopstick", "sign"
+      ],
+
+      "exclude_override_keywords": [
+        "large check", "check", "cheque", "trophy", "medal", "certificate", "plaque"
+      ],
+
+      "clip_positive_keywords": [
+        "trophy", "certificate", "medal", "cheque", "plaque", "banner", "close-up of an award"
+      ],
+      "clip_negative_keywords": [
+        "person", "people", "musical instrument", "smartphone", "plate of food", "tableware"
+      ],
+
+      "use_clip_verify": true
+    },
+    {
+      "name": "No_People",
+      "max_person_count": 0
     },
     {
       "name": "Group_Photo",

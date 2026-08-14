@@ -22,8 +22,9 @@ output/
 __pycache__/main.cpython-311.pyc
 _uploads_temp/
 paddle_results.json
+2007.06.14 -  拿督张仕国创业50周年纪念/
+2025.03.14-2025.03.18-林梦福州公会-316庆典/
+2025.06.22-诗巫盆栽协会/
 input/
-input2/
-input3/
-input4/
-ollama.py
+auto_report.py
+ddgstext.py

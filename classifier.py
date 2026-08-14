@@ -27,8 +27,19 @@ def normalize_text(text):
     return t
 
 def kw_in_text(keyword, normalized_text):
-    """keyword 做同樣的冠詞/空白正規化後，判斷是否為 normalized_text 的子字串。"""
-    return normalize_text(keyword.lower()) in normalized_text
+    """keyword 做同樣的冠詞/空白正規化後，判斷是否為 normalized_text 的「完整詞/詞組」。
+
+    改用 \\b 詞邊界比對，而不是單純子字串比對：
+    單字關鍵詞（例如 "ship"、"sign"、"arm"）如果用子字串比對，會誤中
+    "championship"、"relationship"、"design"、"army" 這類單字。
+    詞組（例如 "on stage"）維持原本行為，只要求詞組本身左右是邊界即可，
+    中間的空白仍是逐字比對。
+    """
+    kw_norm = normalize_text(keyword.lower())
+    if not kw_norm:
+        return False
+    pattern = r'(?<!\w)' + re.escape(kw_norm) + r'(?!\w)'
+    return re.search(pattern, normalized_text) is not None
 
 # 全局變量，延遲加載模型
 CLIP_MODEL = None
@@ -111,7 +122,19 @@ def find_source_file(images_dir, file_stem):
 def classify_one(entry, categories, default_category, images_dir):
     file_name = entry.get("file", "unknown")
     caption_text = normalize_text(get_caption_text(entry).lower())
-    
+
+    # --- 全域最優先：skip_clip_keywords 強制通過 ---
+    # 提到最前面（連人數判定、肢體零件過濾都還沒跑），
+    # 因為像 Ship 這種分類，規則是「不管有沒有人、有幾個人，
+    # 只要 caption 提到船，就整張圖直接進 Ship」，優先權要蓋過
+    # No_People / 肢體零件過濾 / Award_Ceremony 等其他所有判斷。
+    for cat in categories:
+        name = cat["name"]
+        skip_clip_kws = cat.get("skip_clip_keywords", [])
+        bypass_hit = next((kw for kw in skip_clip_kws if kw_in_text(kw, caption_text)), None) if skip_clip_kws else None
+        if bypass_hit:
+            return name, f"strong_keyword_bypass:{bypass_hit}"
+
     # --- 基礎人數判定 ---
     florence_count = entry.get("num_people_detected", 0) or 0
     yolo_count = entry.get("yolo_person_count")
@@ -129,20 +152,16 @@ def classify_one(entry, categories, default_category, images_dir):
 
     area_ratio = entry.get("yolo_max_person_area_ratio") or entry.get("real_person_max_area_ratio", 0.0)
 
-    # --- 全域最優先：skip_clip_keywords 強制通過 ---
-    # 這個要跑在「遍歷分類規則」的迴圈之前，不然像 No_People (max_person_count: 0)
-    # 排在前面的分類，會在 Award_Ceremony 輪到之前，就先把 YOLO 沒偵測到人的
-    # 「站在台上」照片（人拍得遠、YOLO 容易漏數成 0）攔截走，skip_clip 完全沒機會判斷。
-    for cat in categories:
-        name = cat["name"]
-        skip_clip_kws = cat.get("skip_clip_keywords", [])
-        bypass_hit = next((kw for kw in skip_clip_kws if kw_in_text(kw, caption_text)), None) if skip_clip_kws else None
-        if bypass_hit:
-            return name, f"strong_keyword_bypass:{bypass_hit}"
-
     # --- 遍歷分類規則 ---
     for cat in categories:
         name = cat["name"]
+
+        # bypass_only 分類（例如 Ship）只透過最上面的全域 skip_clip_keywords
+        # 判斷，不參與這裡的一般規則比對。沒有這行的話，Ship 因為沒設
+        # caption_keywords / 人數門檻，會被當成「什麼條件都符合」的分類，
+        # 排第一個就把後面所有不相關的照片全部吃掉。
+        if cat.get("bypass_only"):
+            continue
 
         # 關鍵詞匹配 (增加觸發機率)
         target_kws = cat.get("caption_keywords", []) or cat.get("ocr_keywords", [])
