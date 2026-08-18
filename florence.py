@@ -5,9 +5,6 @@ import json
 import glob
 import logging
 import torch
-import datetime
-import platform
-import exifread
 from PIL import Image
 from transformers import AutoProcessor, AutoModelForCausalLM
 
@@ -19,6 +16,31 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger("florence")
 
 MODEL_NAME = "microsoft/Florence-2-base-ft"
+
+# Same config.json used by classifier.py, so "which extensions count as
+# video/audio" only needs to be maintained in one place.
+CONFIG_PATH = r"C:\Users\wkb75\Documents\intern cck record\florence\config.json"
+
+# Fallback list used only if config.json is missing / unreadable, so this
+# script still runs standalone.
+DEFAULT_VIDEO_EXTS = (
+    ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".m4v", ".mpg", ".mpeg",
+    ".mp3", ".wav", ".m4a", ".aac", ".flac",
+)
+
+def load_video_exts(config_path=CONFIG_PATH):
+    """Reads video_formats from config.json (extensions without the dot,
+    e.g. "mp4") and returns them lower-cased WITH a leading dot, ready to
+    compare against os.path.splitext output."""
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        formats = cfg.get("video_formats", [])
+        if formats:
+            return tuple("." + fmt.lower().lstrip(".") for fmt in formats)
+    except Exception as e:
+        logger.warning(f"Could not load video_formats from {config_path}: {e}. Using built-in default list.")
+    return DEFAULT_VIDEO_EXTS
 
 CONTAINER_LABELS = [
     "picture frame", "picture", "board", "poster", "television", "monitor",
@@ -293,18 +315,6 @@ class FlorenceAnalyzer:
     # ------------------------------------------------------------------
     # Extraction & Analysis Tasks
     # ------------------------------------------------------------------
-    def _extract_metadata(self, image_path):
-        meta_info = {"metadata_year": None}
-        try:
-            with open(image_path, 'rb') as f:
-                tags = exifread.process_file(f, details=False)
-                if 'EXIF DateTimeOriginal' in tags:
-                    meta_info["metadata_year"] = str(tags['EXIF DateTimeOriginal'])[:4]
-                    return meta_info
-            meta_info["metadata_year"] = str(datetime.datetime.fromtimestamp(os.stat(image_path).st_mtime).year)
-        except: pass
-        return meta_info
-
     def run_task(self, image, task_prompt):
         inputs = self.processor(text=task_prompt, images=image, return_tensors="pt")
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
@@ -319,7 +329,6 @@ class FlorenceAnalyzer:
         return self.processor.post_process_generation(generated_text, task=task_prompt, image_size=image.size)
 
     def analyze_image(self, image_path):
-        metadata = self._extract_metadata(image_path)
         image = Image.open(image_path).convert("RGB")
         
         result = {
@@ -335,16 +344,36 @@ class FlorenceAnalyzer:
         result["post_processing"]["combined_caption"] = {"combined": combined_text}
         
         result = self.refine_detections_and_caption(result, image)
-        result["post_processing"]["final_year"] = metadata["metadata_year"]
-        
+        result["file_type"] = "image"
+
         return result
+
+    def analyze_non_image_stub(self, file_path):
+        """For video/audio files: skip Florence-2 / OD entirely (there's
+        nothing for the model to caption) and just record enough for
+        downstream steps (mixjson / classify) to recognize and route it.
+        Keeps the same top-level JSON shape as analyze_image so mixjson.py
+        doesn't need special-case parsing."""
+        ext = os.path.splitext(file_path)[1].lower().lstrip(".")
+
+        return {
+            "image_info": {"path": file_path, "size": None},
+            "captions": {}, "detections": {}, "post_processing": {
+                "combined_caption": {"combined": ""},
+                "object_statistics": {},
+                "scene_type": "non_image_file",
+                "real_person_max_area_ratio": 0.0,
+            },
+            "file_type": "video",
+            "file_ext": ext,
+        }
 
 # ------------------------------------------------------------------
 # Main Logic
 # ------------------------------------------------------------------
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python script.py <input_folder_or_file>")
+        print("Usage: python script.py <input_folder_or_file> [output_dir] [config_path]")
         sys.exit(1)
 
     input_path = sys.argv[1].strip().strip('"')
@@ -354,26 +383,43 @@ if __name__ == "__main__":
     output_dir = sys.argv[2].strip().strip('"') if len(sys.argv) > 2 else os.path.join(base_output_dir, "florence")
     os.makedirs(output_dir, exist_ok=True)
 
+    image_exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+    # Optional 3rd CLI arg: path to config.json (so main.py can pass the same
+    # --config it uses for classifier.py / organizer.py). Falls back to the
+    # hardcoded CONFIG_PATH if not given, so calling this script standalone
+    # (python florence.py <input> <output>) still works unchanged.
+    config_path_arg = sys.argv[3].strip().strip('"') if len(sys.argv) > 3 else CONFIG_PATH
+    video_exts = load_video_exts(config_path_arg)
+
+    # Model is only needed for actual images. Loading it here regardless of
+    # what's in the folder is fine — cheap relative to per-image inference.
     analyzer = FlorenceAnalyzer()
 
+    def process_one(file_path):
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext in video_exts:
+            logger.info(f"Non-image file detected ({ext}), skipping model, recording as video: {os.path.basename(file_path)}")
+            return analyzer.analyze_non_image_stub(file_path)
+        return analyzer.analyze_image(file_path)
+
     if os.path.isdir(input_path):
-        image_exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
-        files = [f for f in glob.glob(os.path.join(input_path, "*")) if f.lower().endswith(image_exts)]
-        
+        all_exts = image_exts + video_exts
+        files = [f for f in glob.glob(os.path.join(input_path, "*")) if f.lower().endswith(all_exts)]
+
         logger.info(f"Processing folder. Saving results to: {output_dir}")
-        for img_path in sorted(files):
+        for file_path in sorted(files):
             try:
-                logger.info(f"Analyzing: {os.path.basename(img_path)}")
-                output = analyzer.analyze_image(img_path)
-                
-                out_name = os.path.splitext(os.path.basename(img_path))[0] + ".json"
+                logger.info(f"Analyzing: {os.path.basename(file_path)}")
+                output = process_one(file_path)
+
+                out_name = os.path.splitext(os.path.basename(file_path))[0] + ".json"
                 with open(os.path.join(output_dir, out_name), "w", encoding="utf-8") as f:
                     json.dump(output, f, indent=2, ensure_ascii=False)
             except Exception as e:
-                logger.error(f"Failed to process {img_path}: {e}")
+                logger.error(f"Failed to process {file_path}: {e}")
 
     elif os.path.isfile(input_path):
-        output = analyzer.analyze_image(input_path)
+        output = process_one(input_path)
         out_name = os.path.splitext(os.path.basename(input_path))[0] + ".json"
         with open(os.path.join(output_dir, out_name), "w", encoding="utf-8") as f:
             json.dump(output, f, indent=2, ensure_ascii=False)

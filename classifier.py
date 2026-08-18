@@ -119,8 +119,16 @@ def find_source_file(images_dir, file_stem):
             return path
     return None
 
-def classify_one(entry, categories, default_category, images_dir):
+def classify_one(entry, categories, default_category, images_dir, video_category=None):
     file_name = entry.get("file", "unknown")
+
+    # --- 最高優先：非圖片檔案（video/audio）直接短路 ---
+    # florence.py / mixjson.py 已經在更上游把這種檔案標記為 file_type="video"，
+    # 這裡完全跳過人數判定、caption 關鍵詞、CLIP 驗證等所有邏輯，
+    # 一律直接歸類到 config.json 裡設定的 video_category。
+    if video_category and entry.get("file_type") == "video":
+        return video_category, f"video_file_shortcut(ext={entry.get('file_ext')})"
+
     caption_text = normalize_text(get_caption_text(entry).lower())
 
     # --- 全域最優先：skip_clip_keywords 強制通過 ---
@@ -226,13 +234,14 @@ def main():
     cfg = load_json(args.config)
     categories = cfg.get("categories", [])
     default_category = cfg.get("default_category", "Unknown")
+    video_category = cfg.get("video_category")
 
     print(f"開始分析 {len(entries)} 張圖片的分類...")
     
     manifest = []
     for entry in entries:
         file_stem = entry.get("file", "unknown")
-        category, reason = classify_one(entry, categories, default_category, args.images_dir)
+        category, reason = classify_one(entry, categories, default_category, args.images_dir, video_category)
         
         print(f"  [RESULT] {file_stem} -> {category} ({reason})")
 

@@ -69,9 +69,12 @@ def run_pipeline(input_dir: Path, output_dir: Path, config_path: Path) -> None:
         shutil.rmtree(florence_dir)
 
     # ---- 1. Florence: 图片描述 + 物件识别 ----
+    # 第三个参数把 config_path 传进去，这样 florence.py 判断哪些副档名算
+    # video/audio（video_formats）用的是跟 classifier / organizer 同一份
+    # config.json，不会因为各自读到不同版本而出现「同一批文件两边判断不一致」。
     run_step(
         "Florence 图片分析",
-        [sys.executable, str(FLORENCE_PY), str(input_dir), str(florence_dir)],
+        [sys.executable, str(FLORENCE_PY), str(input_dir), str(florence_dir), str(config_path)],
     )
 
     run_step(
@@ -112,6 +115,8 @@ def run_pipeline(input_dir: Path, output_dir: Path, config_path: Path) -> None:
     # --skip-classify: classifier 那一步已经分类并写好 manifest 了，这里只负责搬文件，
     # 不然 organizer.py 会自己用内建的、写死的旧路径再跑一次分类，导致找不到
     # aggregated_for_llm.json 而静默失败 (退出码却是 0，容易被忽略)。
+    # 仍然要传 --config：即使跳过分类，organizer 也要读 config.json 里的
+    # video_formats 来扩充查找副档名，不然 video/audio 文件会被判定「找不到」。
     run_step(
         "物理改名归档 (organizer)",
         [
@@ -119,6 +124,7 @@ def run_pipeline(input_dir: Path, output_dir: Path, config_path: Path) -> None:
             "--manifest", str(manifest_json),
             "--images-dir", str(input_dir),
             "--output-root", str(organized_dir),
+            "--config", str(config_path),
             "--skip-classify",
         ],
     )

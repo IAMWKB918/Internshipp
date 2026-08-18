@@ -45,6 +45,40 @@
         .card button { margin-top: 8px; background: #444; color: #ddd; border: none; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
         .card button:hover { background: #555; }
         #result-overlay { position:absolute; bottom:20px; background:rgba(0,0,0,0.85); padding:12px; border-radius:5px; display:none; z-index: 20; }
+
+        /* ---- Stats row: Total / Classified / Missing ---- */
+        .stats-row { display: flex; gap: 12px; margin-bottom: 15px; }
+        .stat-box { flex: 1; background: #262626; border-radius: 8px; padding: 12px 15px; text-align: center; border-bottom: 4px solid #007bff; }
+        .stat-box.good { border-bottom-color: #28a745; }
+        .stat-box.warn { border-bottom-color: #dc3545; cursor: pointer; }
+        .stat-box.warn:hover { background: #2e2020; }
+        .stat-box.time { border-bottom-color: #6f42c1; }
+        .stat-num { font-size: 26px; font-weight: bold; }
+        .stat-label { font-size: 12px; color: #999; margin-top: 4px; }
+
+        /* ---- Batch status variants: pending / running / error ---- */
+        .pending-block { opacity: 0.5; }
+        .running-header { border-left-color: #ffc107 !important; }
+        .error-header { border-left-color: #dc3545 !important; }
+        .pulse { display: inline-block; animation: pulse 1.2s infinite; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+        /* ---- Timing comparison chart (across folders) ---- */
+        .timing-block { background: #1e1e1e; border-radius: 10px; padding: 15px 20px; margin-bottom: 20px; }
+        .timing-block h3 { margin: 0 0 12px; font-size: 15px; color: #ffc107; }
+
+        /* ---- Missing files list (collapsed by default) ---- */
+        .missing-list { display: none; background: #1a1414; border: 1px solid #442222; border-radius: 8px; padding: 10px 15px; margin-bottom: 15px; font-size: 12px; color: #ffb3b3; max-height: 180px; overflow-y: auto; }
+        .missing-list.open { display: block; }
+        .missing-list div { padding: 2px 0; }
+
+        /* ---- Horizontal bar chart per category ---- */
+        .chart-block { margin-bottom: 15px; }
+        .chart-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; font-size: 13px; }
+        .chart-label { width: 150px; flex-shrink: 0; color: #ddd; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .chart-track { flex: 1; background: #2a2a2a; border-radius: 4px; height: 18px; position: relative; overflow: hidden; }
+        .chart-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; justify-content: flex-end; padding-right: 6px; box-sizing: border-box; transition: width 0.4s ease; }
+        .chart-count { width: 40px; flex-shrink: 0; color: #aaa; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -111,15 +145,34 @@
 
         function removeTask(idx) { taskQueue.splice(idx, 1); renderTasks(); }
 
+        let pollTimer = null;
+        let openMissingSet = new Set(); // 记住哪些 batch 的 missing 清单被展开过，轮询重绘时保留状态
+        let latestProgressData = null;
+
+        // ---- 扫描动画排程：哪个 folder 先跑完，就先排队播哪个 folder 的动画 ----
+        let animating = false;
+        let animationQueue = [];
+        let queuedBatchIndices = new Set();
+        let animatedBatchIndices = new Set();
+
         async function runAll() {
             const runBtn = document.getElementById('run-btn');
             runBtn.disabled = true;
             const statusText = document.getElementById('status-text');
-            statusText.innerText = "Processing on AI Engine... (each source runs separately, this can take a while)";
+            statusText.style.display = 'block';
+            statusText.innerText = "Starting…";
 
+            document.getElementById('current-img').style.display = 'none';
+            document.getElementById('scanner').style.display = 'none';
+            document.getElementById('result-overlay').style.display = 'none';
             document.getElementById('summary-area').style.display = 'none';
             document.getElementById('summary-area').innerHTML = '';
             document.getElementById('error-box').style.display = 'none';
+            openMissingSet = new Set();
+            animating = false;
+            animationQueue = [];
+            queuedBatchIndices = new Set();
+            animatedBatchIndices = new Set();
 
             const res = await fetch('/run_tasks', {
                 method: 'POST',
@@ -134,103 +187,288 @@
                 return;
             }
 
-            const imgElement = document.getElementById('current-img');
-            const scanner = document.getElementById('scanner');
-            const overlay = document.getElementById('result-overlay');
+            taskQueue = []; renderTasks();
 
-            statusText.style.display = 'none';
-            imgElement.style.display = 'block'; 
-            scanner.style.display = 'block';
+            // 不等 pipeline 全部跑完 —— 每个来源(folder)一跑完，轮询马上就会看到那批的结果
+            if (pollTimer) clearInterval(pollTimer);
+            pollTimer = setInterval(pollProgress, 1200);
+            pollProgress();
+        }
 
-            for (let item of data.logs) {
-                // 1. 先切换图片 (强制刷新缓存)
-                imgElement.src = item.thumb_url + "?t=" + new Date().getTime();
-                overlay.style.display = 'block';
-                overlay.innerHTML = `Analyzing: <span style="color:#aaa">${item.file}</span>`;
-                
-                // 2. 等待动画周期
-                await new Promise(r => setTimeout(r, 1000));
-                
-                // 3. 显示结果 (年份/分类)
-                overlay.innerHTML = `<b style="color:#00ff00">Sorted into: ${item.result}</b>`;
-                await new Promise(r => setTimeout(r, 500));
-            }
+        async function pollProgress() {
+            const res = await fetch('/progress');
+            if (!res.ok) return;
+            const data = await res.json();
+            latestProgressData = data;
+            renderProgress(data);
+            maybeFinalize(data);
+        }
 
-            scanner.style.display = 'none';
-            imgElement.style.display = 'none'; 
-            statusText.style.display = 'block';
-            statusText.innerText = "Batch Complete!";
+        function maybeFinalize(data) {
+            // 全部 folder 都跑完了，而且排队的扫描动画也都播完了，才真的收尾
+            if (!data.finished || animating || animationQueue.length > 0) return;
+
+            clearInterval(pollTimer);
+            pollTimer = null;
+
+            const runBtn = document.getElementById('run-btn');
+            runBtn.disabled = false;
+            runBtn.style.display = 'none'; // 任务完成后隐藏"开始"按钮
+            document.getElementById('reset-btn').style.display = 'block';
+            document.getElementById('status-text').style.display = 'block';
+            document.getElementById('status-text').innerText = "Batch Complete!";
 
             if (data.errors && data.errors.length) {
                 const box = document.getElementById('error-box');
                 box.style.display = 'block';
                 box.innerHTML = "⚠️ 以下来源处理失败：<br>" + data.errors.join("<br>");
             }
-
-            showBatches(data.batches || []);
-            taskQueue = []; renderTasks();
-
-            runBtn.disabled = false;
-            runBtn.style.display = 'none'; // 任务完成后隐藏“开始”按钮
-            document.getElementById('reset-btn').style.display = 'block';
         }
 
-        // 每个来源 (资料夹) 各自跑完各自一个区块，各自的 output 路径、各自开资料夹
-        function showBatches(batches) {
+        function formatDuration(sec) {
+            sec = Math.round(sec || 0);
+            const m = Math.floor(sec / 60);
+            const s = sec % 60;
+            return m > 0 ? `${m}m ${s}s` : `${s}s`;
+        }
+
+        // 某个 folder 一进入 done 状态，就把它的逐张图片 log 排进动画队列；
+        // 队列按 folder 完成的先后顺序播放，播完一个接一个，不用等全部 folder 都跑完。
+        function queueAnimationsFor(batches) {
+            batches.forEach(b => {
+                if (b.status === 'done' && !animatedBatchIndices.has(b.batch_index) && !queuedBatchIndices.has(b.batch_index)) {
+                    queuedBatchIndices.add(b.batch_index);
+                    animationQueue.push(b);
+                }
+            });
+            if (!animating && animationQueue.length > 0) {
+                processAnimationQueue();
+            }
+        }
+
+        async function processAnimationQueue() {
+            animating = true;
+            const imgElement = document.getElementById('current-img');
+            const scanner = document.getElementById('scanner');
+            const overlay = document.getElementById('result-overlay');
+            const statusText = document.getElementById('status-text');
+
+            while (animationQueue.length > 0) {
+                const batch = animationQueue.shift();
+                const logs = batch.logs || [];
+
+                statusText.style.display = 'none';
+                scanner.style.display = 'block';
+                overlay.style.display = 'block';
+
+                for (const item of logs) {
+                    // video/audio 没有缩略图，跳过设图，只显示文件名
+                    if (item.thumb_url) {
+                        imgElement.style.display = 'block';
+                        imgElement.src = item.thumb_url + "?t=" + new Date().getTime();
+                    } else {
+                        imgElement.style.display = 'none';
+                    }
+                    overlay.innerHTML = `<span style="color:#888">[${batch.name}]</span> Analyzing: <span style="color:#aaa">${item.file}</span>`;
+                    await new Promise(r => setTimeout(r, 1000));
+
+                    overlay.innerHTML = `<b style="color:#00ff00">Sorted into: ${item.result}</b>`;
+                    await new Promise(r => setTimeout(r, 500));
+                }
+
+                scanner.style.display = 'none';
+                imgElement.style.display = 'none';
+                overlay.style.display = 'none';
+                animatedBatchIndices.add(batch.batch_index);
+            }
+
+            statusText.style.display = 'block';
+            animating = false;
+            if (latestProgressData) maybeFinalize(latestProgressData);
+        }
+
+        // 每个来源 (资料夹) 独立跑完各自一个区块，各自的 output 路径、各自开资料夹
+        function categoryColor(idx) {
+            // 用固定间隔的 hue 循环上色，类别数量不管多少都不会重复撞色
+            return `hsl(${(idx * 47) % 360}, 60%, 50%)`;
+        }
+
+        // 轮询回来的整批数据 -> 排动画队列 + 重绘状态文字 + 时间比较图 + 每个 batch 卡片
+        function renderProgress(data) {
+            const batches = data.batches || [];
+
+            queueAnimationsFor(batches);
+
+            const doneOrError = batches.filter(b => b.status === 'done' || b.status === 'error').length;
+
+            // 动画播放期间由 processAnimationQueue 自己控制 status-text/stage，轮询这里不要抢着改
+            if (!animating) {
+                const statusText = document.getElementById('status-text');
+                statusText.style.display = 'block';
+                statusText.innerText = data.finished
+                    ? "Batch Complete!"
+                    : `Processing… ${doneOrError}/${batches.length} folders done`;
+            }
+
             const area = document.getElementById('summary-area');
             area.style.display = 'block';
-            area.innerHTML = "";
 
             if (batches.length === 0) {
                 area.innerHTML = `<div style="color:#888;padding:15px;">No files were sorted.</div>`;
                 return;
             }
 
-            for (const batch of batches) {
-                const years = Object.keys(batch.summary).sort().reverse();
+            let html = renderTimingChart(batches);
+            batches.forEach(batch => { html += renderBatchBlock(batch); });
+            area.innerHTML = html;
 
-                let yearsHtml = "";
-                if (years.length === 0) {
-                    yearsHtml = `<div style="color:#888;padding:10px;">No files were sorted in this source.</div>`;
-                } else {
-                    for (const year of years) {
-                        const categories = batch.summary[year];
-                        const yearTotal = Object.values(categories).reduce((a, b) => a + b, 0);
+            // 轮询会整个重绘，展开过的 missing 清单要还原状态，不然每次轮询都弹回收起
+            openMissingSet.forEach(idx => {
+                const el = document.getElementById(`missing-list-${idx}`);
+                if (el) el.classList.add('open');
+            });
+        }
 
-                        let cardsHtml = "";
-                        for (const category in categories) {
-                            const count = categories[category];
-                            cardsHtml += `
-                                <div class="card">
-                                    <p>${category}</p>
-                                    <h3>${count}</h3>
-                                    <button onclick="openLocalFolder(${batch.batch_index}, '${year}/${category}')">📂 View Files</button>
-                                </div>`;
-                        }
+        // 跨 folder 的处理时间比较 —— 只要有 batch 开始跑(running 或 done)就会出现，实时更新
+        function renderTimingChart(batches) {
+            const withTime = batches.filter(b => (b.status === 'running' || b.status === 'done' || b.status === 'error') && b.elapsed_seconds);
+            if (withTime.length === 0) return "";
 
-                        yearsHtml += `
-                            <div class="year-block">
-                                <div class="year-title">
-                                    <span>📅 ${year}</span>
-                                    <span style="font-size:13px;color:#aaa;">${yearTotal} photos</span>
-                                </div>
-                                <div class="summary-grid">${cardsHtml}</div>
-                            </div>`;
-                    }
-                }
+            const maxT = Math.max(...withTime.map(b => b.elapsed_seconds));
+            let rows = "";
+            withTime.forEach((b, idx) => {
+                const pct = maxT ? Math.round((b.elapsed_seconds / maxT) * 100) : 0;
+                rows += `
+                    <div class="chart-row">
+                        <div class="chart-label">${b.name}</div>
+                        <div class="chart-track">
+                            <div class="chart-fill" style="width:${pct}%; background:${categoryColor(idx)};"></div>
+                        </div>
+                        <div class="chart-count">${formatDuration(b.elapsed_seconds)}</div>
+                    </div>`;
+            });
+            return `<div class="timing-block"><h3>⏱ Processing Time by Folder</h3>${rows}</div>`;
+        }
 
-                area.innerHTML += `
-                    <div class="batch-block">
+        // 依 batch 目前状态 (pending / running / error / done) 分流渲染
+        function renderBatchBlock(batch) {
+            if (batch.status === 'pending') {
+                return `
+                    <div class="batch-block pending-block">
                         <div class="batch-header">
                             <div>
-                                <span class="batch-name">📁 ${batch.name}</span>
-                                <span class="batch-path">${batch.output_path}</span>
+                                <span class="batch-name">⏳ ${batch.name}</span>
+                                <span class="batch-path">Waiting to start…</span>
                             </div>
-                            <button onclick="openLocalFolder(${batch.batch_index}, 'root')" style="background:#28a745; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer;">📂 Main Folder</button>
                         </div>
-                        <div class="batch-body">${yearsHtml}</div>
                     </div>`;
             }
+            if (batch.status === 'running') {
+                return `
+                    <div class="batch-block">
+                        <div class="batch-header running-header">
+                            <div>
+                                <span class="batch-name pulse">⚙️ ${batch.name}</span>
+                                <span class="batch-path">Processing… ${formatDuration(batch.elapsed_seconds)} elapsed</span>
+                            </div>
+                        </div>
+                    </div>`;
+            }
+            if (batch.status === 'error') {
+                return `
+                    <div class="batch-block">
+                        <div class="batch-header error-header">
+                            <div>
+                                <span class="batch-name">❌ ${batch.name}</span>
+                                <span class="batch-path">${batch.error_message || 'Failed'} · ${formatDuration(batch.elapsed_seconds)}</span>
+                            </div>
+                        </div>
+                    </div>`;
+            }
+            return renderDoneBatch(batch);
+        }
+
+        function renderDoneBatch(batch) {
+            const categories = batch.summary || {};
+            const catNames = Object.keys(categories).sort((a, b) => categories[b] - categories[a]);
+            const total = batch.total ?? 0;
+            const classified = batch.classified ?? 0;
+            const missing = batch.missing ?? Math.max(0, total - classified);
+            const missingFiles = batch.missing_files || [];
+            const maxCount = catNames.length ? categories[catNames[0]] : 0;
+
+            let cardsHtml = "";
+            let chartHtml = "";
+            if (catNames.length === 0) {
+                chartHtml = `<div style="color:#888;padding:10px;">No files were sorted in this source.</div>`;
+            } else {
+                catNames.forEach((category, idx) => {
+                    const count = categories[category];
+                    const pct = maxCount ? Math.round((count / maxCount) * 100) : 0;
+                    const color = categoryColor(idx);
+
+                    chartHtml += `
+                        <div class="chart-row">
+                            <div class="chart-label">${category}</div>
+                            <div class="chart-track">
+                                <div class="chart-fill" style="width:${pct}%; background:${color};"></div>
+                            </div>
+                            <div class="chart-count">${count}</div>
+                        </div>`;
+
+                    cardsHtml += `
+                        <div class="card" style="border-bottom-color:${color};">
+                            <p>${category}</p>
+                            <h3>${count}</h3>
+                            <button onclick="openLocalFolder(${batch.batch_index}, '${category}')">📂 View Files</button>
+                        </div>`;
+                });
+            }
+
+            const missingListId = `missing-list-${batch.batch_index}`;
+            const missingHtml = missingFiles.length
+                ? missingFiles.map(f => `<div>⚠️ ${f}</div>`).join("")
+                : `<div style="color:#888;">No missing files.</div>`;
+
+            return `
+                <div class="batch-block">
+                    <div class="batch-header">
+                        <div>
+                            <span class="batch-name">✅ ${batch.name}</span>
+                            <span class="batch-path">${batch.output_path || ''}</span>
+                        </div>
+                        <button onclick="openLocalFolder(${batch.batch_index}, 'root')" style="background:#28a745; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer;">📂 Main Folder</button>
+                    </div>
+                    <div class="batch-body">
+                        <div class="stats-row">
+                            <div class="stat-box">
+                                <div class="stat-num">${total}</div>
+                                <div class="stat-label">Total Files</div>
+                            </div>
+                            <div class="stat-box good">
+                                <div class="stat-num">${classified}</div>
+                                <div class="stat-label">Classified</div>
+                            </div>
+                            <div class="stat-box ${missing > 0 ? 'warn' : ''}" ${missing > 0 ? `onclick="toggleMissing('${missingListId}', ${batch.batch_index})"` : ''}>
+                                <div class="stat-num">${missing}</div>
+                                <div class="stat-label">Missing ${missing > 0 ? '(click to view)' : ''}</div>
+                            </div>
+                            <div class="stat-box time">
+                                <div class="stat-num">${formatDuration(batch.elapsed_seconds)}</div>
+                                <div class="stat-label">Time Taken</div>
+                            </div>
+                        </div>
+                        <div id="${missingListId}" class="missing-list">${missingHtml}</div>
+                        <div class="chart-block">${chartHtml}</div>
+                        <div class="summary-grid">${cardsHtml}</div>
+                    </div>
+                </div>`;
+        }
+
+        function toggleMissing(id, batchIndex) {
+            document.getElementById(id).classList.toggle('open');
+            if (openMissingSet.has(batchIndex)) openMissingSet.delete(batchIndex);
+            else openMissingSet.add(batchIndex);
         }
 
         async function openLocalFolder(batchIndex, target) { await fetch(`/open_folder/${batchIndex}/${target}`); }

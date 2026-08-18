@@ -95,8 +95,17 @@ def main():
         num_people = summarize_people(object_statistics)
         caption_hints = extract_caption_hints(caption_short, caption_detailed, caption_combined)
 
+        # florence.py tags non-image (video/audio) files with file_type="video"
+        # and skips the model entirely for them. Carry that flag through
+        # unchanged so classify.py can short-circuit before any of the
+        # people-count / caption-keyword logic below runs.
+        file_type = flo.get("file_type", "image")
+        file_ext = flo.get("file_ext")
+
         profile = {
             "file": img_stem,
+            "file_type": file_type,
+            "file_ext": file_ext,
             "image_size": image_info.get("size"),
 
             "caption_short": caption_short,
@@ -143,8 +152,10 @@ def main():
     florence_zero = sum(1 for e in all_data if (e.get("num_people_detected", 0) or 0) == 0)
     union_zero = sum(1 for e in all_data if not e.get("has_people_union", False))
     body_part_only = sum(1 for e in all_data if e.get("yolo_body_part_only", False))
+    video_count = sum(1 for e in all_data if e.get("file_type") == "video")
 
     print(f"Aggregation complete. Processed {total} files.")
+    print(f"Video/audio files detected (file_type='video'): {video_count}  <- will be routed straight to the video category by classify.py")
     print(f"[merge] {yolo_matched}/{total} records successfully matched with YOLO results.")
     print("-" * 50)
     print(f"Total files: {total}")

@@ -25,7 +25,28 @@ MANIFEST_PATH = r"C:\Users\wkb75\Documents\intern cck record\florence\output\cla
 IMAGES_DIR = r"C:\Users\wkb75\Documents\intern cck record\florence\input"
 OUTPUT_ROOT = r"C:\Users\wkb75\Documents\intern cck record\florence\output\organized_photos"
 VALID_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+
+# Fallback list, only used if config.json has no "video_formats" entry.
+# Normally overwritten at runtime by build_valid_extensions() below so this
+# stays in sync with the same config.json that florence.py / classifier.py use.
+DEFAULT_VIDEO_EXTENSIONS = {
+    '.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv', '.m4v', '.mpg', '.mpeg',
+    '.mp3', '.wav', '.m4a', '.aac', '.flac',
+}
 # =========================================================================
+
+
+def build_valid_extensions(config):
+    """图片副档名 + config.json 里的 video_formats，合并成一份查找用的副档名清单。
+    这样 find_image_file 才能在源资料夹里真的找到 video/audio 文件本体，
+    不然分类结果就算正确标成 Video，也会因为只找 .jpg/.png 而报 NOT FOUND。"""
+    image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+    video_formats = (config or {}).get("video_formats")
+    if video_formats:
+        video_exts = {"." + fmt.lower().lstrip(".") for fmt in video_formats}
+    else:
+        video_exts = DEFAULT_VIDEO_EXTENSIONS
+    return image_exts | video_exts
 
 
 def parse_args():
@@ -107,11 +128,12 @@ def run_classification(aggregated_path, config_path, manifest_out_path, images_d
 
     categories = config.get("categories", [])
     default_category = config.get("default_category", "Unclassified")
+    video_category = config.get("video_category")
 
     manifest = []
     for entry in entries:
         file_stem = entry.get("file", "unknown")
-        category, reason = classify_one(entry, categories, default_category, images_dir)
+        category, reason = classify_one(entry, categories, default_category, images_dir, video_category)
         manifest.append({
             "file": file_stem,
             "category": category,
@@ -144,17 +166,18 @@ def run_classification(aggregated_path, config_path, manifest_out_path, images_d
 
 # ------------------------- 归档部分：按分类顺序编号改名 -------------------------
 
-def find_image_file(stem, search_dir):
-    """在指定目录及其子目录中查找匹配文件名（不含扩展名）的图片，不区分大小写"""
+def find_image_file(stem, search_dir, valid_extensions=None):
+    """在指定目录及其子目录中查找匹配文件名（不含扩展名）的图片/视频，不区分大小写"""
     search_path = Path(search_dir)
     if not search_path.exists():
         print(f"[ERROR] 搜索路径不存在: {search_dir}")
         return None
 
+    exts = valid_extensions if valid_extensions is not None else VALID_EXTENSIONS
     clean_stem = Path(stem).stem.lower()
 
     for file in search_path.rglob('*'):
-        if file.is_file() and file.suffix.lower() in VALID_EXTENSIONS:
+        if file.is_file() and file.suffix.lower() in exts:
             if file.stem.lower() == clean_stem:
                 return file
     return None
@@ -165,7 +188,7 @@ def sanitize_name(name):
     return "".join(c if c not in '/\\:*?"<>|' else "_" for c in str(name)).strip() or "Unclassified"
 
 
-def organize(manifest, images_dir, output_root, mode="copy", dry_run=False):
+def organize(manifest, images_dir, output_root, mode="copy", dry_run=False, valid_extensions=None):
     success_count = 0
     fail_count = 0
     category_counters = defaultdict(int)  # 每个分类独立计数：大合照-1, 大合照-2 ...
@@ -177,7 +200,7 @@ def organize(manifest, images_dir, output_root, mode="copy", dry_run=False):
 
         category = sanitize_name(entry.get("category", "Unclassified"))
 
-        src_image = find_image_file(raw_file_name, images_dir)
+        src_image = find_image_file(raw_file_name, images_dir, valid_extensions)
         if not src_image:
             print(f"[NOT FOUND] 找不到图片: {raw_file_name}")
             entry["status"] = "source image not found, skipped"
@@ -238,12 +261,19 @@ def main():
         if manifest is None:
             sys.exit(1)  # 分类失败 (通常是路径不对)，别再假装成功退出
 
+    # 不管走哪个分支都要重新载入一次 config：--skip-classify 时上面没读过 config，
+    # 但 organize() 找源文件仍然需要 video_formats 来扩充副档名清单，
+    # 不然 video 分类结果没问题，一样会卡在 "找不到图片"。
+    config = load_json(args.config, "config.json") or {}
+    valid_extensions = build_valid_extensions(config)
+
     print("=" * 50)
     print(f"Searching in: {args.images_dir}")
     print("=" * 50)
 
     success_count, fail_count = organize(
-        manifest, args.images_dir, args.output_root, mode=args.mode, dry_run=args.dry_run
+        manifest, args.images_dir, args.output_root, mode=args.mode, dry_run=args.dry_run,
+        valid_extensions=valid_extensions,
     )
 
     # 归档结果也回写进 manifest，方便核对每张图最终改名成了什么

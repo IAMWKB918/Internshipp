@@ -1,5 +1,12 @@
 {
   "default_category": "Distant_People_or_Crowd",
+
+  "video_category": "Video",
+  "video_formats": [
+    "mp4", "mov", "avi", "mkv", "wmv", "flv", "m4v", "mpg", "mpeg",
+    "mp3", "wav", "m4a", "aac", "flac"
+  ],
+
   "categories": [
     {
       "name": "Ship",
@@ -20,7 +27,11 @@
         "in front of stage", "guitar", "violin", "piano", "drum", "microphone", "instrument",
         "phone", "cellphone", "smartphone", "mobile phone",
         "plate", "bowl", "dish", "tableware", "cutlery", "spoon", "fork", 
-        "chopstick", "sign"
+        "chopstick", "sign",
+        "glass", "drinking glass", "tumbler", "glassware",
+        "wine glass", "goblet", "flute", "stemware",
+        "can", "soda can", "beverage can", "cola", "coke can", 
+        "aluminum can", "canned water"
       ],
 
       "exclude_override_keywords": [
