@@ -62,7 +62,7 @@
   }
   .company-badge .company-note { color: var(--muted); font-size: 12px; }
   label { display: block; font-size: 13px; margin-bottom: 6px; color: var(--text); font-weight: 600; }
-  input[type=text], input[type=number], select {
+  input[type=text], input[type=number], select, textarea {
     width: 100%;
     padding: 9px 10px;
     border: 1px solid var(--border);
@@ -70,8 +70,10 @@
     font-size: 14px;
     background: #fff;
     color: var(--text);
+    font-family: inherit;
   }
-  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  textarea { resize: vertical; line-height: 1.5; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
   .row { display: flex; gap: 10px; }
   .row > div { flex: 1; }
   .field { margin-bottom: 14px; }
@@ -255,6 +257,27 @@
 
     <button type="submit" class="submit" id="submitBtn">開始搜尋</button>
   </form>
+
+  <div class="card" id="reportCard">
+    <h2>📝 生成報告（貼上連結）</h2>
+    <div class="hint">
+      這個功能跟上面「搜尋 / 分類」完全獨立，不用先跑過搜尋，也不用等搜尋做完，可以單獨使用。
+      把新聞連結貼進來（每行一個），至少要有一個連結才能生成，因為沒有連結就沒有 reference 內容。
+    </div>
+    <div class="field">
+      <label>新聞連結（每行一個）</label>
+      <textarea id="reportLinks" rows="5" placeholder="https://example.com/news1&#10;https://example.com/news2"></textarea>
+    </div>
+    <button type="button" class="submit" id="reportBtn" disabled>生成報告</button>
+
+    <div id="reportResult" style="display:none; margin-top:16px;">
+      <div class="hint" id="reportMeta"></div>
+      <table>
+        <tbody id="reportBody"></tbody>
+      </table>
+    </div>
+    <div id="reportError" style="display:none; color:#dc2626; font-size:13px; margin-top:10px;"></div>
+  </div>
 
   <div class="card" id="progressSection">
     <h2>📡 即時進度</h2>
@@ -442,6 +465,83 @@ document.getElementById("searchForm").addEventListener("submit", async function 
   }
 
   startStream();
+});
+
+// ============================================================
+// 生成報告（貼上連結）— 跟上面搜尋/分類完全獨立，沒有先後次序，
+// user 可以只開這頁貼連結，不碰上面的搜尋表單。
+// ============================================================
+const reportLinksEl = document.getElementById("reportLinks");
+const reportBtn = document.getElementById("reportBtn");
+
+function getReportLinks() {
+  return reportLinksEl.value
+    .split("\n")
+    .map(function (s) { return s.trim(); })
+    .filter(Boolean);
+}
+
+function updateReportBtnState() {
+  // 沒有連結 = 沒有 reference，按鈕不能按
+  reportBtn.disabled = getReportLinks().length === 0;
+}
+reportLinksEl.addEventListener("input", updateReportBtnState);
+updateReportBtnState();
+
+function renderReport(data) {
+  const rows = [
+    ["標題", data.title_zh, data.title_en],
+    ["描述", data.description_zh, data.description_en],
+    ["成果", data.accomplishment_zh, data.accomplishment_en],
+    ["相關行業", data.related_industry_zh, data.related_industry_en],
+  ];
+  const body = document.getElementById("reportBody");
+  body.innerHTML = "";
+  rows.forEach(function (row) {
+    const label = row[0], zh = row[1], en = row[2];
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<th style='width:80px; white-space:nowrap;'>" + label + "</th>" +
+      "<td>[ZH] " + (zh || "") + "<br>[EN] " + (en || "") + "</td>";
+    body.appendChild(tr);
+  });
+
+  const sourcesCount = (data.sources_used || []).length;
+  let meta = "國家: " + (data.country || "-") + " ｜ 使用來源: " + sourcesCount + " 筆";
+  if (data.saved_path) meta += " ｜ 已儲存: " + data.saved_path;
+  document.getElementById("reportMeta").textContent = meta;
+
+  document.getElementById("reportResult").style.display = "block";
+}
+
+reportBtn.addEventListener("click", async function () {
+  const links = getReportLinks();
+  if (links.length === 0) return; // 沒有連結，無法生成
+
+  document.getElementById("reportError").style.display = "none";
+  document.getElementById("reportResult").style.display = "none";
+  reportBtn.disabled = true;
+  reportBtn.textContent = "生成中，請稍候...";
+
+  try {
+    const resp = await fetch("/generate_report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ links: links }),
+    });
+    const body = await resp.json();
+    if (!resp.ok) {
+      throw new Error(body.error || "生成失敗");
+    }
+    renderReport(body.data);
+  } catch (err) {
+    const errBox = document.getElementById("reportError");
+    errBox.textContent = "錯誤: " + err.message;
+    errBox.style.display = "block";
+  } finally {
+    reportBtn.textContent = "生成報告";
+    updateReportBtnState();
+  }
 });
 </script>
 </body>

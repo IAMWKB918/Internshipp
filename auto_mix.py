@@ -7,8 +7,10 @@ import threading
 import queue
 from datetime import datetime, timedelta
 from html import unescape
+from pathlib import Path
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, Response, render_template
+import trafilatura
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -55,6 +57,40 @@ OUTPUT_DIR = os.getenv(
     "OUTPUT_DIR",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "output"),
 )
+
+# ============================================================
+# Auto Report（生成報告）功能設定 — 跟上面搜尋/分類完全獨立，
+# 只需要 user 貼連結進來，用同一個 Ollama model。
+# ============================================================
+OLLAMA_MODEL = "qwen3:8b"             # 跟 auto_report.py 用同一個 model
+OLLAMA_URL = "http://localhost:11434/api/generate"
+REPORT_MAX_CONTEXT_CHARS = 12000       # context 太長就截斷
+
+# JSON Schemas，直接丟給 Ollama 的 structured-output "format" 欄位，
+# 讓 model 的輸出被限制在這個 schema 裡，不用只靠 prompt 文字要求。
+REPORT_ZH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "accomplishment": {"type": "string"},
+        "related_industry": {"type": "string"},
+        "country": {"type": "string"},
+        "sources_used": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["title", "description", "accomplishment", "related_industry", "country", "sources_used"],
+}
+
+REPORT_EN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title_en": {"type": "string"},
+        "description_en": {"type": "string"},
+        "accomplishment_en": {"type": "string"},
+        "related_industry_en": {"type": "string"},
+    },
+    "required": ["title_en", "description_en", "accomplishment_en", "related_industry_en"],
+}
 
 def parse_date(date_raw):
     """ddmmyyyy -> datetime, or None if invalid."""
@@ -782,10 +818,163 @@ def save_to_txt(date_raw, activity, other_company, my_company_name, extra_keywor
 
 
 # ============================================================
+# Auto Report（生成報告）功能 — 從 auto_report.py 搬過來，邏輯不變，
+# 差別只是：連結不是從 links.txt 讀，而是 user 在網頁貼上來的。
+# 跟上面搜尋 / 分類功能完全獨立，沒有先後順序，user 也可以只用這個功能。
+# ============================================================
+
+def fetch_article_text(url: str) -> str | None:
+    """抓取單一連結的文章內文。"""
+    try:
+        downloaded = trafilatura.fetch_url(url)
+        if not downloaded:
+            print(f"  [SKIP] 無法下載: {url}")
+            return None
+        text = trafilatura.extract(downloaded, include_comments=False, include_tables=False)
+        if not text or len(text.strip()) < 50:
+            print(f"  [SKIP] 內容太短或空白: {url}")
+            return None
+        return text.strip()
+    except Exception as e:
+        print(f"  [ERROR] 抓取失敗 {url}: {e}")
+        return None
+
+
+def build_report_context(links: list[str]) -> str:
+    """依序抓取所有連結，合併成一個 context 給模型讀。"""
+    chunks = []
+    for i, url in enumerate(links, 1):
+        print(f"[報告 {i}/{len(links)}] 抓取: {url}")
+        text = fetch_article_text(url)
+        if text:
+            chunks.append(f"---Source {i}: {url}---\n{text}")
+
+    if not chunks:
+        raise RuntimeError("所有連結都無法讀取到內容，請確認連結是否正確、可公開存取")
+
+    context = "\n\n".join(chunks)
+    if len(context) > REPORT_MAX_CONTEXT_CHARS:
+        print(f"[INFO] context 太長 ({len(context)} 字), 截斷至 {REPORT_MAX_CONTEXT_CHARS}")
+        context = context[:REPORT_MAX_CONTEXT_CHARS]
+    return context
+
+
+def build_report_zh_prompt(company: str, context: str) -> str:
+    """第一步：只用繁體中文抽取結構化內容。"""
+    return f"""Read the source content below (news articles / reports related to "{company}").
+Based ONLY on this content — do not invent facts not mentioned in it — extract:
+- title: a concise Traditional Chinese title for what happened
+- description: 2-4 sentences in Traditional Chinese describing the event/report
+- accomplishment: concrete achievements or highlights mentioned in the source, in Traditional Chinese
+- related_industry: the relevant industry sector, in Traditional Chinese
+- country: the country this content is about, inferred from the content itself
+- sources_used: the source URLs you actually drew content from
+
+Write in Traditional Chinese for all text fields.
+
+Source content:
+{context}
+"""
+
+
+def build_report_en_prompt(zh_data: dict) -> str:
+    """第二步：把中文欄位翻成英文。"""
+    return f"""Translate the following Traditional Chinese fields into natural, fluent English.
+Do not summarize further or add new information — translate faithfully.
+
+title: {zh_data.get('title', '')}
+description: {zh_data.get('description', '')}
+accomplishment: {zh_data.get('accomplishment', '')}
+related_industry: {zh_data.get('related_industry', '')}
+
+Return the English translations as: title_en, description_en, accomplishment_en, related_industry_en.
+"""
+
+
+def call_ollama(prompt: str, schema: dict) -> str:
+    """呼叫本地 Ollama model，用 schema 限制輸出格式。"""
+    resp = requests.post(
+        OLLAMA_URL,
+        json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "think": False,      # 關掉 Qwen3 的 "thinking" 輸出
+            "format": schema,    # structured-output：限制在這個 JSON schema
+            "options": {"temperature": 0.3},
+        },
+        timeout=300,
+    )
+    resp.raise_for_status()
+    return resp.json()["response"]
+
+
+def parse_ollama_json(raw: str, debug_filename: str) -> dict:
+    """把 model 回應解析成 dict，先把原始輸出存檔方便除錯。"""
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+    Path(os.path.join(OUTPUT_DIR, debug_filename)).write_text(raw, encoding="utf-8")
+
+    cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
+    cleaned = re.sub(r"```json|```", "", cleaned).strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1:
+        raise RuntimeError(f"模型輸出裡找不到 JSON，請查看 {debug_filename}")
+    json_str = cleaned[start : end + 1]
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"JSON 解析失敗: {e}（請查看 {debug_filename}）")
+
+
+def generate_report_from_links(links: list[str]) -> dict:
+    """給一批連結，跑兩段 Ollama（抽取中文 -> 翻譯英文），回傳合併後的結果並存檔。"""
+    context = build_report_context(links)
+
+    print(f"[報告 1/2] 用 {OLLAMA_MODEL} 抽取繁體中文內容...")
+    zh_prompt = build_report_zh_prompt(MY_COMPANY_NAME, context)
+    zh_raw = call_ollama(zh_prompt, REPORT_ZH_SCHEMA)
+    zh_data = parse_ollama_json(zh_raw, "report_raw_zh.txt")
+
+    print(f"[報告 2/2] 用 {OLLAMA_MODEL} 翻譯成英文...")
+    en_prompt = build_report_en_prompt(zh_data)
+    en_raw = call_ollama(en_prompt, REPORT_EN_SCHEMA)
+    en_data = parse_ollama_json(en_raw, "report_raw_en.txt")
+
+    data = {
+        "title_zh": zh_data.get("title", ""),
+        "title_en": en_data.get("title_en", ""),
+        "description_zh": zh_data.get("description", ""),
+        "description_en": en_data.get("description_en", ""),
+        "accomplishment_zh": zh_data.get("accomplishment", ""),
+        "accomplishment_en": en_data.get("accomplishment_en", ""),
+        "related_industry_zh": zh_data.get("related_industry", ""),
+        "related_industry_en": en_data.get("related_industry_en", ""),
+        "country": zh_data.get("country", ""),
+        "sources_used": zh_data.get("sources_used", []),
+    }
+
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    json_path = os.path.join(OUTPUT_DIR, f"report_{timestamp}.json")
+    Path(json_path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    data["saved_path"] = json_path
+
+    print(f"[報告完成] 已儲存至: {json_path}")
+    return data
+
+
+# ============================================================
 # 網頁介面（Flask + 即時進度顯示，跟原本一樣，前端不用改）
 # ============================================================
 
 app = Flask(__name__)
+# 強制每次 request 都重新讀 templates 檔案，不要快取在記憶體裡，
+# 避免改了 support.html 之後，Flask process 沒重啟就一直吃舊版本。
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.jinja_env.auto_reload = True
 
 job_lock = threading.Lock()
 job_running = False
@@ -900,6 +1089,25 @@ def start():
     return jsonify({"status": "started"})
 
 
+@app.route("/generate_report", methods=["POST"])
+def generate_report():
+    """獨立功能：user 貼連結進來，生成中英文報告句子。
+    跟上面的搜尋/分類任務（/start /stream）完全無關，也不用先跑過那個。"""
+    data = request.get_json(force=True, silent=True) or {}
+    raw_links = data.get("links") or []
+    links = [str(l).strip() for l in raw_links if str(l).strip()]
+
+    if not links:
+        return jsonify({"error": "至少要貼一個連結才能生成，因為沒有 reference 內容"}), 400
+
+    try:
+        result = generate_report_from_links(links)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({"status": "ok", "data": result})
+
+
 @app.route("/stream")
 def stream():
     def gen():
@@ -912,4 +1120,4 @@ def stream():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5001, debug=False)
+    app.run(host="127.0.0.1", port=5001, debug=False, threaded=True)

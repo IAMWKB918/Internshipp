@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-main.py — 精简版 Pipeline (Florence -> YOLO -> MixJSON -> Classifier -> Organizer)
-"""
-
 import argparse
 import shutil
 import subprocess
@@ -55,7 +50,6 @@ def run_step(name: str, cmd: list[str]) -> None:
 
 
 def run_pipeline(input_dir: Path, output_dir: Path, config_path: Path) -> None:
-    # 定义中间文件路径（全部放在 input 文件夹底下新开的 output 子文件夹里）
     florence_dir     = output_dir / "florence"
     yolo_json        = output_dir / "yolo.json"
     aggregated_json  = output_dir / "aggregated_for_llm.json"

@@ -2,6 +2,11 @@ import argparse
 import json
 import os
 import re
+import sys
+import io
+
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 # ==================== Path configuration ====================
 FLORENCE_DIR = r"C:\Users\wkb75\Documents\intern cck record\florence\output\florence"
