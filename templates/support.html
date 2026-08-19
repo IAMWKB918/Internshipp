@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto Mix 自動搜尋系統</title>
+<style>
+  :root {
+    --accent: #2563eb;
+    --accent-dark: #1d4ed8;
+    --bg: #f4f6fb;
+    --card: #ffffff;
+    --border: #e2e8f0;
+    --text: #1e293b;
+    --muted: #64748b;
+    --catch: #16a34a;
+    --pass: #94a3b8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Microsoft JhengHei", system-ui, -apple-system, sans-serif;
+    padding: 24px;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); margin-bottom: 24px; font-size: 14px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px;
+    margin-bottom: 18px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+  }
+  .card h2 {
+    font-size: 15px;
+    margin: 0 0 14px 0;
+    color: var(--accent-dark);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .hint { font-size: 12px; color: var(--muted); margin: -8px 0 14px 0; line-height: 1.6; }
+  .company-badge {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 13.5px;
+    color: #14532d;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .company-badge .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #22c55e; display: inline-block; flex-shrink: 0;
+  }
+  .company-badge .company-note { color: var(--muted); font-size: 12px; }
+  label { display: block; font-size: 13px; margin-bottom: 6px; color: var(--text); font-weight: 600; }
+  input[type=text], input[type=number], select {
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    background: #fff;
+    color: var(--text);
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  .field { margin-bottom: 14px; }
+  .date-group {
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .date-group-title { font-size: 12px; color: var(--muted); margin-bottom: 8px; font-weight: 600; }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px 0; }
+  .checkbox-row input { width: auto; }
+  .checkbox-row label { margin: 0; font-weight: 500; }
+  button.submit {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 11px 22px;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+  }
+  button.submit:hover { background: var(--accent-dark); }
+  button.submit:disabled { background: #94a3b8; cursor: not-allowed; }
+
+  .stats { display: flex; gap: 12px; margin-bottom: 14px; }
+  .stat {
+    flex: 1;
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    text-align: center;
+  }
+  .stat .num { font-size: 22px; font-weight: 700; color: var(--accent-dark); }
+  .stat .lbl { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  .bar-track { background: #e2e8f0; border-radius: 6px; height: 8px; overflow: hidden; margin-bottom: 14px; }
+  .bar-fill { background: var(--accent); height: 100%; width: 0%; transition: width .2s ease; }
+
+  #logPanel {
+    background: #0f172a;
+    color: #d1fae5;
+    font-family: "Consolas", "SFMono-Regular", monospace;
+    font-size: 12.5px;
+    border-radius: 10px;
+    padding: 12px 14px;
+    height: 260px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    line-height: 1.6;
+  }
+  #logPanel .line-pass { color: #94a3b8; }
+  #logPanel .line-catch { color: #4ade80; }
+  #logPanel .line-err { color: #f87171; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td a { color: var(--accent-dark); word-break: break-all; }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #dcfce7;
+    color: #166534;
+    font-weight: 600;
+  }
+  #progressSection, #resultsSection { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🔎 Auto Mix 自動搜尋系統</h1>
+  <div class="subtitle">先設定搜尋條件，送出後會即時顯示搜尋 / 驗證進度，不會卡住看不到反應。</div>
+
+  <form id="searchForm">
+
+    <div class="card">
+      <h2>① 自己公司</h2>
+      <div class="hint">
+        搜尋規則：有對方公司名稱 → 用對方公司名稱搜尋；沒對方公司但有活動 → 用「自己公司 + 活動」搜尋；
+        兩者都沒有 → 只用「自己公司 + 日期」搜尋。
+      </div>
+      <div class="company-badge">
+        <span class="dot"></span>
+        目前設定的自己公司：<strong>{{ my_company_name }}</strong>
+        <span class="company-note">（要換公司名稱，去 auto_mix.py 改 MY_COMPANY_NAME 那一行即可，這裡不用再填）</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>② 日期</h2>
+      <div class="hint">日期是搜尋 / 比對的依據，請確認填寫正確。若活動橫跨多天，勾選下方「跨日 / 多天活動」。</div>
+
+      <div class="date-group">
+        <div class="date-group-title">開始日期</div>
+        <div class="row">
+          <div>
+            <label>日 (DD)</label>
+            <input type="number" id="dd" min="1" max="31" placeholder="日">
+          </div>
+          <div>
+            <label>月 (MM)</label>
+            <select id="mm">
+              <option value="">請選擇</option>
+              {% for num, name in months %}
+              <option value="{{ num }}">{{ name }} ({{ num }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>年 (YYYY)</label>
+            <select id="yyyy">
+              <option value="">請選擇</option>
+              {% for y in years %}
+              <option value="{{ y }}">{{ y }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="checkbox-row">
+        <input type="checkbox" id="durationToggle">
+        <label for="durationToggle">跨日 / 多天活動 (Duration) — 需要再輸入一個日期</label>
+      </div>
+
+      <div class="date-group" id="endDateGroup" style="display:none;">
+        <div class="date-group-title">另一個日期（系統會自動排出正確的開始 / 結束日期，不用擔心先後順序）</div>
+        <div class="row">
+          <div>
+            <label>日 (DD)</label>
+            <input type="number" id="dd2" min="1" max="31" placeholder="日">
+          </div>
+          <div>
+            <label>月 (MM)</label>
+            <select id="mm2">
+              <option value="">請選擇</option>
+              {% for num, name in months %}
+              <option value="{{ num }}">{{ name }} ({{ num }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label>年 (YYYY)</label>
+            <select id="yyyy2">
+              <option value="">請選擇</option>
+              {% for y in years %}
+              <option value="{{ y }}">{{ y }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>③ 搜尋條件（都可留空，依上面規則自動組合）</h2>
+      <div class="field">
+        <label>對方公司名稱</label>
+        <input type="text" id="otherCompany" list="companyHistoryList" placeholder="輸入新公司名稱，或從歷史紀錄選擇">
+        <datalist id="companyHistoryList">
+          {% for c in history %}
+          <option value="{{ c }}">
+          {% endfor %}
+        </datalist>
+      </div>
+      <div class="field">
+        <label>活動名稱</label>
+        <input type="text" id="activity" placeholder="例如：周年晚宴 / 慈善義賣會">
+      </div>
+      <div class="field">
+        <label>其他關鍵字</label>
+        <input type="text" id="extraKeyword" placeholder="不屬於公司名稱或活動名稱的額外字詞，會附加在搜尋內容裡">
+      </div>
+    </div>
+
+    <button type="submit" class="submit" id="submitBtn">開始搜尋</button>
+  </form>
+
+  <div class="card" id="progressSection">
+    <h2>📡 即時進度</h2>
+    <div class="stats">
+      <div class="stat"><div class="num" id="candidateCount">0</div><div class="lbl">API 找到的候選文章</div></div>
+      <div class="stat"><div class="num"><span id="verifyIndex">0</span>/<span id="verifyTotal">0</span></div><div class="lbl">驗證進度</div></div>
+      <div class="stat"><div class="num" id="matchedCount">0</div><div class="lbl">日期吻合 (Match)</div></div>
+    </div>
+    <div class="bar-track"><div class="bar-fill" id="verifyBar"></div></div>
+    <div id="logPanel"></div>
+  </div>
+
+  <div class="card" id="resultsSection">
+    <h2>✅ 搜尋結果</h2>
+    <table>
+      <thead>
+        <tr><th style="width:28px;">#</th><th>標題 / 連結</th><th style="width:90px;">命中方式</th></tr>
+      </thead>
+      <tbody id="resultsBody"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+let es = null;
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+function buildDateRaw() {
+  const dd = document.getElementById("dd").value;
+  const mm = document.getElementById("mm").value;
+  const yyyy = document.getElementById("yyyy").value;
+  if (!dd || !mm || !yyyy) return null;
+  const d1 = pad2(dd) + pad2(mm) + yyyy;
+
+  if (document.getElementById("durationToggle").checked) {
+    const dd2 = document.getElementById("dd2").value;
+    const mm2 = document.getElementById("mm2").value;
+    const yyyy2 = document.getElementById("yyyy2").value;
+    if (!dd2 || !mm2 || !yyyy2) return null;
+    const d2 = pad2(dd2) + pad2(mm2) + yyyy2;
+    return d1 + "-" + d2;
+  }
+  return d1;
+}
+
+document.getElementById("durationToggle").addEventListener("change", function () {
+  document.getElementById("endDateGroup").style.display = this.checked ? "block" : "none";
+});
+
+function logLine(text, cls) {
+  const panel = document.getElementById("logPanel");
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  div.textContent = text;
+  panel.appendChild(div);
+  panel.scrollTop = panel.scrollHeight;
+}
+
+function resetProgressUI() {
+  document.getElementById("logPanel").innerHTML = "";
+  document.getElementById("candidateCount").textContent = "0";
+  document.getElementById("verifyIndex").textContent = "0";
+  document.getElementById("verifyTotal").textContent = "0";
+  document.getElementById("matchedCount").textContent = "0";
+  document.getElementById("verifyBar").style.width = "0%";
+  document.getElementById("resultsBody").innerHTML = "";
+}
+
+function setSubmitting(isSubmitting) {
+  const btn = document.getElementById("submitBtn");
+  btn.disabled = isSubmitting;
+  btn.textContent = isSubmitting ? "搜尋中，請稍候..." : "開始搜尋";
+}
+
+function renderResults(results) {
+  const body = document.getElementById("resultsBody");
+  body.innerHTML = "";
+  results.forEach(function (r, idx) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td>" + (idx + 1) + "</td>" +
+      "<td><div>" + (r.title || "") + "</div><a href='" + r.link + "' target='_blank'>" + r.link + "</a></td>" +
+      "<td><span class='badge'>" + (r.matched_in || "-") + "</span></td>";
+    body.appendChild(tr);
+  });
+  document.getElementById("resultsSection").style.display = "block";
+}
+
+function handleEvent(msg) {
+  switch (msg.type) {
+    case "log":
+      logLine(msg.message);
+      break;
+    case "query_start":
+      logLine("🔍 搜尋 [" + msg.label + "]: " + msg.query);
+      break;
+    case "query_result":
+      logLine("   -> " + msg.raw + " 筆原始結果，新增 " + msg.new + " 筆（目前候選總數 " + msg.total + "）");
+      document.getElementById("candidateCount").textContent = msg.total;
+      break;
+    case "candidates_done":
+      document.getElementById("candidateCount").textContent = msg.total;
+      document.getElementById("verifyTotal").textContent = msg.total;
+      logLine("✅ 候選文章收集完成，共 " + msg.total + " 筆不重複結果，開始逐一驗證日期...");
+      break;
+    case "verify_progress":
+      document.getElementById("verifyIndex").textContent = msg.index;
+      document.getElementById("verifyTotal").textContent = msg.total;
+      document.getElementById("matchedCount").textContent = msg.matched_so_far;
+      var pct = msg.total ? Math.round((msg.index / msg.total) * 100) : 0;
+      document.getElementById("verifyBar").style.width = pct + "%";
+      var tag = msg.status === "CATCH" ? "✔ 命中 (" + msg.where + ")" : "✘ 未命中";
+      var cls = msg.status === "CATCH" ? "line-catch" : "line-pass";
+      logLine("   [" + msg.index + "/" + msg.total + "] " + tag + " - " + (msg.title || "").slice(0, 55), cls);
+      break;
+    case "error":
+      logLine("❌ 錯誤: " + msg.message, "line-err");
+      break;
+    case "done":
+      logLine("🎉 搜尋完成，共找到 " + msg.count + " 筆日期完全吻合的結果");
+      if (msg.saved_path) {
+        logLine("已儲存至: " + msg.saved_path);
+      }
+      renderResults(msg.results || []);
+      setSubmitting(false);
+      if (es) es.close();
+      break;
+  }
+}
+
+function startStream() {
+  if (es) es.close();
+  es = new EventSource("/stream");
+  es.onmessage = function (evt) {
+    const msg = JSON.parse(evt.data);
+    handleEvent(msg);
+  };
+  es.onerror = function () {
+    logLine("⚠ 串流連線中斷（若搜尋已完成可忽略）");
+  };
+}
+
+document.getElementById("searchForm").addEventListener("submit", async function (e) {
+  e.preventDefault();
+
+  const dateRaw = buildDateRaw();
+  if (!dateRaw) {
+    alert("請完整填寫日期（日 / 月 / 年）");
+    return;
+  }
+
+  const payload = {
+    date_raw: dateRaw,
+    activity: document.getElementById("activity").value.trim(),
+    other_company: document.getElementById("otherCompany").value.trim(),
+    extra_keyword: document.getElementById("extraKeyword").value.trim(),
+  };
+
+  resetProgressUI();
+  document.getElementById("progressSection").style.display = "block";
+  document.getElementById("resultsSection").style.display = "none";
+  setSubmitting(true);
+  logLine("任務已送出，開始搜尋...");
+
+  let resp;
+  try {
+    resp = await fetch("/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    logLine("連線失敗: " + err, "line-err");
+    setSubmitting(false);
+    return;
+  }
+
+  const body = await resp.json();
+  if (!resp.ok) {
+    logLine("錯誤: " + (body.error || "未知錯誤"), "line-err");
+    setSubmitting(false);
+    return;
+  }
+
+  startStream();
+});
+</script>
+</body>
+</html>
