@@ -18,22 +18,21 @@ if sys.platform == "win32":
 # CONFIG
 # ============================================================
 load_dotenv()
-api_key = os.getenv("STRIPE_API_KEY")  # 注意：這其實是 Serper API 的 key，變數名稱沿用你原本 .env 的設定
 
-# ↓↓↓ 只要改這一行就好，這是「自己公司」的名稱，網頁上不會再有輸入框要你貼 ↓↓↓
+api_key = os.getenv("SERPER_API_KEY") or os.getenv("STRIPE_API_KEY")
+
 MY_COMPANY_NAME = "S.K. Tiong Enterprise Sdn. Bhd."
+
+CEO_NAME = "张仕国"
 
 RESULTS_PER_PAGE = 10
 MAX_PAGES = 3
 FETCH_TIMEOUT = 20
 DATE_WINDOW_DAYS = 30
 
-# 如果使用者只填「單一日期」（沒有填 end date），代表日期可能不是 100% 精準
-# （報導可能早幾天或晚幾天才刊出），所以比對日期時，
-# 會把「單一日期」前後這幾天也一併算是符合。
-# 如果使用者填的是「日期範圍」（有 start date 也有 end date），
-# 就不會再額外往前後擴充，只認範圍內的日期。
-SINGLE_DATE_MATCH_WINDOW_DAYS = 2
+SINGLE_DATE_MATCH_WINDOW_DAYS = 3
+
+MAX_BROAD_MONTH_QUERIES = 6
 
 KNOWN_SOURCE_SITES = [
     "uca.org.my",
@@ -42,8 +41,6 @@ KNOWN_SOURCE_SITES = [
     "malaysiafoochow.com",
 ]
 
-# 「其他公司」欄位的歷史紀錄，會出現在網頁表單的建議清單裡（可以直接選，也可以自己打新的）。
-# 之後有新的公司名稱，直接加進這個 list 就會出現在下拉建議中。
 COMPANY_HISTORY = [
     "民都魯中華縂商會",
     "林夢福州工會",
@@ -54,28 +51,10 @@ COMPANY_HISTORY = [
     "詩巫盆栽協會",
 ]
 
-# 結果 txt 輸出資料夾（預設放在這個 .py 檔案旁邊的 output 資料夾，
-# 也可以用環境變數 OUTPUT_DIR 指定其他路徑，例如你原本的 Windows 路徑）
 OUTPUT_DIR = os.getenv(
     "OUTPUT_DIR",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "output"),
 )
-
-# ============================================================
-# 搜尋規則（跟 auto_search.py 完全一樣，只是 MY_COMPANY_NAME 改成
-# 從網頁表單傳進來的參數，不再是寫死的常數）：
-#
-#   subject 優先順序：
-#     1) 有「對方公司名稱」            -> 用對方公司名稱
-#     2) 沒對方公司，但有「活動名稱」  -> 用「自己公司 + 活動名稱」
-#     3) 都沒有                        -> 只用「自己公司」+ 日期
-#
-#   如果另外填了「其他關鍵字」（不屬於公司名稱或活動名稱的額外字詞），
-#   會附加在上面任何一種 subject 的後面，一起拿去搜尋。
-# ============================================================
-
-
-# ---------------- date helpers（跟 auto_search.py 相同，未修改）----------------
 
 def parse_date(date_raw):
     """ddmmyyyy -> datetime, or None if invalid."""
@@ -86,8 +65,8 @@ def parse_date(date_raw):
 
 
 def parse_date_range(date_raw):
-    """Accepts either a single date 'ddmmyyyy' or a range 'ddmmyyyy-ddmmyyyy'.
-    Returns (start_dt, end_dt, is_range). 若順序相反會自動排好 start/end。"""
+    """接受單一日期 'ddmmyyyy' 或範圍 'ddmmyyyy-ddmmyyyy'。
+    回傳 (start_dt, end_dt, is_range)，順序反了會自動排好。"""
     date_raw = (date_raw or "").strip()
 
     if "-" in date_raw:
@@ -109,23 +88,46 @@ def parse_date_range(date_raw):
 
 
 def date_variants(dt):
+    """一個日期能拿去搜尋/比對的所有『精準格式』字串。
+    涵蓋：ddmmyyyy ddmmyy yyyymmdd yymmdd dd.mm.yyyy yyyy.mm.dd
+    dd/mm/yyyy dd/mm/yy dd-mm-yyyy yyyy-mm-dd 中文 英文 等。"""
     d, m, y = dt.day, dt.month, dt.year
-    yy = y % 100  # 2位數年份，例如 2026 -> 26（有些網站文章標題只會寫 dd/mm/yy）
-    variants = {
-        f"{d:02d}/{m:02d}/{y}", f"{d}/{m}/{y}",
-        f"{d:02d}-{m:02d}-{y}", f"{d}-{m}-{y}",
-        f"{d:02d}.{m:02d}.{y}", f"{d}.{m}.{y}",
-        f"{y}-{m:02d}-{d:02d}", f"{y}/{m:02d}/{d:02d}",
-        dt.strftime("%d %B %Y"), dt.strftime("%B %d, %Y"), dt.strftime("%B %d %Y"),
-        dt.strftime("%d %b %Y"), dt.strftime("%b %d, %Y"), dt.strftime("%b %d %Y"),
-        f"{y}年{m}月{d}日", f"{y}年{m:02d}月{d:02d}日",
-        f"{m}月{d}日", f"{m:02d}月{d:02d}日",
-        f"{y}-{m:02d}-{d:02d}t",
-        # ---- 2位數年份版本 ----
-        f"{d:02d}/{m:02d}/{yy:02d}", f"{d}/{m}/{yy}",
-        f"{d:02d}-{m:02d}-{yy:02d}", f"{d}-{m}-{yy}",
-        f"{d:02d}.{m:02d}.{yy:02d}", f"{d}.{m}.{yy}",
-    }
+    yy = y % 100
+    dd = f"{d:02d}"
+    mm = f"{m:02d}"
+    yyyy = f"{y}"
+    yy2 = f"{yy:02d}"
+
+    variants = set()
+
+    variants.add(f"{dd}{mm}{yyyy}")   # ddmmyyyy
+    variants.add(f"{dd}{mm}{yy2}")    # ddmmyy
+    variants.add(f"{yyyy}{mm}{dd}")   # yyyymmdd
+    variants.add(f"{yy2}{mm}{dd}")    # yymmdd
+
+    for sep in ("/", "-", "."):
+        variants.add(f"{dd}{sep}{mm}{sep}{yyyy}")
+        variants.add(f"{d}{sep}{m}{sep}{yyyy}")
+        variants.add(f"{dd}{sep}{mm}{sep}{yy2}")
+        variants.add(f"{d}{sep}{m}{sep}{yy2}")
+        variants.add(f"{yyyy}{sep}{mm}{sep}{dd}")
+        variants.add(f"{yyyy}{sep}{m}{sep}{d}")
+
+    variants.add(dt.strftime("%d %B %Y"))
+    variants.add(dt.strftime("%B %d, %Y"))
+    variants.add(dt.strftime("%B %d %Y"))
+    variants.add(dt.strftime("%d %b %Y"))
+    variants.add(dt.strftime("%b %d, %Y"))
+    variants.add(dt.strftime("%b %d %Y"))
+
+    variants.add(f"{yyyy}年{m}月{d}日")
+    variants.add(f"{yyyy}年{mm}月{dd}日")
+    variants.add(f"{m}月{d}日")
+    variants.add(f"{mm}月{dd}日")
+
+    # ISO 帶 T
+    variants.add(f"{yyyy}-{mm}-{dd}t")
+
     return {v.lower() for v in variants}
 
 
@@ -145,51 +147,176 @@ def text_has_exact_date(text, variants):
     return any(v in lower for v in variants)
 
 
-# ---------------- query building ----------------
+# ---------------- 通用日期抽取（給「大範圍分類」用）----------------
 
-def _subject(my_company_name, activity, other_company, extra_keyword=""):
-    other = other_company.lstrip("-").strip() if other_company else ""
-    act = activity.strip() if activity else ""
-    extra = extra_keyword.strip() if extra_keyword else ""
+_EN_MONTHS = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+_MONTH_NAMES_RE = "|".join(sorted(_EN_MONTHS.keys(), key=len, reverse=True))
+
+
+def _norm_2digit_year(yy):
+    yy = int(yy)
+    return 2000 + yy if yy < 70 else 1900 + yy
+
+
+def extract_dates_from_text(text):
+    """從任意文字裡抓出所有『看起來像日期』的片段，回傳
+    (year_or_None, month, day_or_None) 的 set，用來跟目標日期做分類比對。
+    day 抓不到就是 None，只用來輔助判斷不影響 yyyy/mm 分類。"""
+    if not text:
+        return set()
+    found = set()
+    t = text
+
+    # yyyy-mm-dd / yyyy/mm/dd / yyyy.mm.dd
+    for m in re.finditer(r'(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})', t):
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            found.add((y, mo, d))
+
+    # dd-mm-yyyy / dd/mm/yyyy / dd.mm.yyyy（馬來西亞慣例：日在前）
+    for m in re.finditer(r'(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})', t):
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            found.add((y, mo, d))
+
+    # dd-mm-yy / dd/mm/yy / dd.mm.yy（2位數年）
+    for m in re.finditer(r'(?<!\d)(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2})(?!\d)', t):
+        d, mo, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            found.add((_norm_2digit_year(yy), mo, d))
+
+    # 緊湊 8 位數：同時嘗試 ddmmyyyy 跟 yyyymmdd 兩種解讀
+    for m in re.finditer(r'(?<!\d)(\d{8})(?!\d)', t):
+        s = m.group(1)
+        d, mo, y = int(s[0:2]), int(s[2:4]), int(s[4:8])
+        if 1 <= mo <= 12 and 1 <= d <= 31 and 1900 <= y <= 2100:
+            found.add((y, mo, d))
+        y2, mo2, d2 = int(s[0:4]), int(s[4:6]), int(s[6:8])
+        if 1 <= mo2 <= 12 and 1 <= d2 <= 31 and 1900 <= y2 <= 2100:
+            found.add((y2, mo2, d2))
+
+    # 緊湊 6 位數：ddmmyy / yymmdd 兩種解讀都試
+    for m in re.finditer(r'(?<!\d)(\d{6})(?!\d)', t):
+        s = m.group(1)
+        d, mo, yy = int(s[0:2]), int(s[2:4]), int(s[4:6])
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            found.add((_norm_2digit_year(yy), mo, d))
+        yy2, mo2, d2 = int(s[0:2]), int(s[2:4]), int(s[4:6])
+        if 1 <= mo2 <= 12 and 1 <= d2 <= 31:
+            found.add((_norm_2digit_year(yy2), mo2, d2))
+
+    # 中文 yyyy年mm月dd日
+    for m in re.finditer(r'(\d{4})年(\d{1,2})月(\d{1,2})日', t):
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            found.add((y, mo, d))
+
+    # 中文 mm月dd日（沒寫年份）
+    for m in re.finditer(r'(?<!\d)(\d{1,2})月(\d{1,2})日', t):
+        mo, d = int(m.group(1)), int(m.group(2))
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            found.add((None, mo, d))
+
+    # 英文 "Month dd, yyyy" / "dd Month yyyy"
+    for m in re.finditer(rf'({_MONTH_NAMES_RE})\.?\s+(\d{{1,2}}),?\s+(\d{{4}})', t, flags=re.I):
+        mo = _EN_MONTHS[m.group(1).lower()]
+        d, y = int(m.group(2)), int(m.group(3))
+        if 1 <= d <= 31:
+            found.add((y, mo, d))
+    for m in re.finditer(rf'(\d{{1,2}})\s+({_MONTH_NAMES_RE})\.?,?\s+(\d{{4}})', t, flags=re.I):
+        d = int(m.group(1))
+        mo = _EN_MONTHS[m.group(2).lower()]
+        y = int(m.group(3))
+        if 1 <= d <= 31:
+            found.add((y, mo, d))
+
+    # 英文 "Month yyyy"（沒寫日）
+    for m in re.finditer(rf'({_MONTH_NAMES_RE})\.?\s+(\d{{4}})', t, flags=re.I):
+        mo = _EN_MONTHS[m.group(1).lower()]
+        y = int(m.group(2))
+        found.add((y, mo, None))
+
+    return found
+
+
+# ---------------- subject / query building ----------------
+
+def build_subject(my_company_name, activity, other_company, extra_keyword):
+    """依照優先順序決定要拿去搜尋的 subject：
+      1) 有 other company -> other company（+活動/其他，絕不含自己公司名）
+      2) 沒有 other company 但有活動/其他 -> 自己公司 + 活動/其他
+      3) 都沒有 -> 只用自己公司
+    回傳 (subject, mode)，mode 是 "other" / "own+extra" / "own-only"。"""
+    other = (other_company or "").lstrip("-").strip()
+    act = (activity or "").strip()
+    extra = (extra_keyword or "").strip()
+    extras = " ".join(t for t in (act, extra) if t)
 
     if other:
-        base = other
-    elif act:
-        base = f"{my_company_name} {act}"
+        subject = f"{other} {extras}".strip() if extras else other
+        mode = "other"
+    elif extras:
+        subject = f"{my_company_name} {extras}".strip()
+        mode = "own+extra"
     else:
-        base = my_company_name
+        subject = my_company_name
+        mode = "own-only"
 
-    if extra:
-        base = f"{base} {extra}"
-    return base
+    return subject, mode
+
+
+def build_tbs(start_dt, end_dt, window_days):
+    start = start_dt
+    end = end_dt + timedelta(days=window_days)
+    return f"cdr:1,cd_min:{start.month}/{start.day}/{start.year},cd_max:{end.month}/{end.day}/{end.year}"
 
 
 def build_queries(start_dt, end_dt, activity, other_company, my_company_name, extra_keyword=""):
     is_range = end_dt > start_dt
-    other = other_company.lstrip("-").strip() if other_company else ""
-    act = activity.strip() if activity else ""
+    act = (activity or "").strip()
+    extra = (extra_keyword or "").strip()
 
-    subject = _subject(my_company_name, activity, other_company, extra_keyword)
+    subject, mode = build_subject(my_company_name, activity, other_company, extra_keyword)
 
-    if start_dt.year == end_dt.year:
-        year_part = f"{start_dt.year}"
-    else:
-        year_part = f"{start_dt.year}-{end_dt.year}"
-    queries = [(f"{subject} {year_part}".strip(), None, "broad")]
+    years = sorted({start_dt.year, end_dt.year})
+    year_part = f"{years[0]}" if len(years) == 1 else f"{years[0]}-{years[1]}"
 
-    def _full_date_variants(dt, label_suffix):
-        date_en = dt.strftime("%d %B %Y")
-        date_slash = f"{dt.day}/{dt.month}/{dt.year}"
-        date_cn = f"{dt.year}年{dt.month}月{dt.day}日"
-        queries.append((f"{subject} {date_en}", None, f"full-date-en{label_suffix}"))
-        queries.append((f"{subject} {date_cn}", None, f"full-date-cn{label_suffix}"))
-        queries.append((f"{subject} {date_slash}", None, f"full-date-slash{label_suffix}"))
-        return date_cn
+    queries = []
 
-    start_date_cn = _full_date_variants(start_dt, "-start" if is_range else "")
+    # ---------- 第一輪：大範圍撒網 subject + yyyy(+mm) ----------
+    ym_pairs = []
+    d = start_dt.replace(day=1)
+    while d <= end_dt:
+        ym_pairs.append((d.year, d.month))
+        # 跳到下個月第一天
+        d = (d.replace(day=28) + timedelta(days=4)).replace(day=1)
+    if (end_dt.year, end_dt.month) not in ym_pairs:
+        ym_pairs.append((end_dt.year, end_dt.month))
 
+    if len(ym_pairs) <= MAX_BROAD_MONTH_QUERIES:
+        for y, m in ym_pairs:
+            month_en = datetime(y, m, 1).strftime("%B")
+            queries.append((f"{subject} {month_en} {y}", None, f"broad-mm-yyyy-{y}-{m:02d}"))
+    # 年份範圍太廣時的保底大範圍查詢
+    queries.append((f"{subject} {year_part}".strip(), None, "broad-yyyy"))
+
+    # ---------- 第二輪：精準日期格式 ----------
+    def add_exact(dt, suffix):
+        queries.append((f"{subject} {dt.strftime('%d %B %Y')}", None, f"exact-en{suffix}"))
+        queries.append((f"{subject} {dt.day}/{dt.month}/{dt.year}", None, f"exact-slash{suffix}"))
+        queries.append((f"{subject} {dt.day:02d}-{dt.month:02d}-{dt.year}", None, f"exact-dash{suffix}"))
+        queries.append((f"{subject} {dt.day:02d}.{dt.month:02d}.{dt.year}", None, f"exact-dot{suffix}"))
+        queries.append((f"{subject} {dt.year}年{dt.month}月{dt.day}日", None, f"exact-cn{suffix}"))
+        queries.append((f"{subject} {dt.day:02d}{dt.month:02d}{dt.year}", None, f"exact-compact{suffix}"))
+
+    add_exact(start_dt, "-start" if is_range else "")
     if is_range:
-        _full_date_variants(end_dt, "-end")
+        add_exact(end_dt, "-end")
         if start_dt.year == end_dt.year and start_dt.month == end_dt.month:
             range_en = f"{start_dt.day}-{end_dt.day} {start_dt.strftime('%B %Y')}"
             range_cn = f"{start_dt.year}年{start_dt.month}月{start_dt.day}日至{end_dt.day}日"
@@ -203,58 +330,28 @@ def build_queries(start_dt, end_dt, activity, other_company, my_company_name, ex
         queries.append((f"{subject} {range_cn}", None, "range-cn"))
         site_date_cn = range_cn
     else:
-        site_date_cn = start_date_cn
+        site_date_cn = f"{start_dt.year}年{start_dt.month}月{start_dt.day}日"
 
+    # ---------- 第三輪：tbs 日期區間限制 ----------
     tbs = build_tbs(start_dt, end_dt, DATE_WINDOW_DAYS)
     queries.append((subject.strip(), tbs, "date-restricted"))
 
-    # 如果有「活動名稱」但沒有「對方公司」，除了原本的「自家公司 + 活動」，
-    # 再額外加一組「只用活動名稱」去搜（不含自家公司名稱），
-    # 因為有些報導可能完全沒提到我方公司名稱，只寫活動名稱。
-    if act and not other:
-        activity_only_subject = f"{act} {extra_keyword}".strip() if extra_keyword else act
-        queries.append(
-            (f"{activity_only_subject} {year_part}".strip(), None, "activity-alone")
-        )
-        queries.append(
-            (activity_only_subject.strip(), tbs, "activity-alone-date-restricted")
-        )
-        # 跟主 subject 一樣，也補上完整日期版本（英文日期 / 中文日期 / 斜線日期），
-        # 而不是只有「年份」跟「tbs 區間」這兩種比較粗略的搜法。
-        date_en = start_dt.strftime("%d %B %Y")
-        date_slash = f"{start_dt.day}/{start_dt.month}/{start_dt.year}"
-        date_cn = f"{start_dt.year}年{start_dt.month}月{start_dt.day}日"
-        queries.append((f"{activity_only_subject} {date_en}", None, "activity-alone-full-date-en"))
-        queries.append((f"{activity_only_subject} {date_cn}", None, "activity-alone-full-date-cn"))
-        queries.append((f"{activity_only_subject} {date_slash}", None, "activity-alone-full-date-slash"))
+    # ---------- 補充查詢：other 模式下若還有活動/其他關鍵字，
+    #            額外抓「自己公司 + 活動/其他」漏網的報導 ----------
+    if mode == "other" and (act or extra):
+        supp = " ".join(t for t in (my_company_name, act, extra) if t).strip()
+        queries.append((f"{supp} {year_part}".strip(), None, "supplement-own+extra"))
+        queries.append((supp, tbs, "supplement-own+extra-date-restricted"))
 
+    # ---------- 第四輪：已知來源網站加強搜尋 ----------
     for site in KNOWN_SOURCE_SITES:
-        # 原本這條:要求「對方公司/自家公司名稱」+「完整中文日期」同時出現在網頁上，
-        # 但有些網站文章根本不會寫完整中文日期(例如只寫 24/07/26 這種格式)，
-        # 這樣搜尋引擎直接 0 結果，連候選都抓不到。
         queries.append((f"site:{site} {subject} {site_date_cn}", None, f"site:{site}"))
-        # 所以再加一條「寬鬆版」:不要求特定日期文字，改用 tbs 讓搜尋引擎自己抓
-        # 這段時間內收錄的頁面，抓到候選之後再交給 verify_date() 做精準比對。
         queries.append((f"site:{site} {subject}", tbs, f"site:{site}-loose"))
 
-    # 如果「對方公司」跟「活動」都有填，額外多搜一次「自己公司 + 活動」，
-    # 抓那些沒提到對方名字、但有寫活動名稱的文章
-    if other and act:
-        extra_subject = f"{my_company_name} {act}"
-        if extra_keyword:
-            extra_subject = f"{extra_subject} {extra_keyword}"
-        queries.append((f"{extra_subject} {year_part}".strip(), None, "activity-only"))
-
-    return queries
+    return queries, subject, mode
 
 
-def build_tbs(start_dt, end_dt, window_days):
-    start = start_dt
-    end = end_dt + timedelta(days=window_days)
-    return f"cdr:1,cd_min:{start.month}/{start.day}/{start.year},cd_max:{end.month}/{end.day}/{end.year}"
-
-
-# ---------------- Serper search (paginated)（未修改）----------------
+# ---------------- Serper search（未修改，沿用原本 API 串接方式）----------------
 
 def serper_search_page(query, page, tbs=None, num=RESULTS_PER_PAGE):
     url = "https://google.serper.dev/search"
@@ -307,18 +404,16 @@ def serper_search_all_pages(query, tbs=None, max_pages=MAX_PAGES):
     return results
 
 
-# ---------------- page fetch ----------------
+# ---------------- page fetch（未修改）----------------
 
 def fetch_page_text(url):
-    """回傳 (純文字, meta 日期集合, 原始 html)。
-    html 會拿去判斷這頁是不是「文章列表/年份目錄頁」，並抓出裡面的連結繼續往下找。"""
     try:
         r = requests.get(url, timeout=FETCH_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
         html = r.text
     except Exception as e:
         print(f"     [fetch failed] {e}")
-        return "", set(), ""
+        return "", set()
 
     meta_dates = set()
 
@@ -338,78 +433,80 @@ def fetch_page_text(url):
     text = unescape(text)
     text = re.sub(r"\s+", " ", text)
 
-    return text, meta_dates, html
+    return text, meta_dates
 
 
-# ---------------- 目錄/列表頁 往下鑽（新增）----------------
-# 有些網站的搜尋結果會命中「年份目錄」、「分類列表」這種頁面
-# （例如 malaysiafoochow.com/news_2018/），這種頁面本身通常不會有
-# 完整日期文字可比對，需要再往下點進裡面的文章連結，逐篇檢查日期。
+# ---------------- 資料吻合度（優先序：年份 > 公會/其他公司名字 > 活動名字 > 我方公司名字 > CEO/老闆名字）----------------
 
-MAX_LISTING_LINKS_TO_CHECK = 12
-LISTING_URL_HINTS = ("news_", "category", "archive", "page", "tag")
+IDENTITY_PRIORITY = ["other_company", "activity", "my_company", "ceo"]
+IDENTITY_LABEL_ZH = {
+    "other_company": "公會/其他公司名字",
+    "activity": "活動名字",
+    "my_company": "公司名字",
+    "ceo": "CEO/老闆名字",
+}
 
 
-def extract_same_site_links(html, base_url):
-    """從 html 抓出「同網域」的連結，過濾掉圖片/PDF/錨點等非文章連結。"""
-    links = []
-    seen = set()
-    base_domain = re.match(r"https?://[^/]+", base_url)
-    base_domain = base_domain.group(0) if base_domain else ""
+def _normalize_for_match(s):
+    """比對用的正規化：去空白、去標點、轉小寫。
+    中文名稱常見會有全形/半形空格差異，英文名稱（例如公司名裡的
+    Sdn. Bhd. / S.K.）常見標點符號有沒有不一致（"Sdn. Bhd." vs "Sdn Bhd"），
+    這些差異都會讓原本的 substring 比對失敗、造成日期明明對上卻被判定
+    「沒提到辨識資料」而整篇移除。所以這裡把空白跟常見標點符號都去掉，
+    只留下文字本身（中文字/英數字）再比對，減少因為符號差異造成的漏抓。"""
+    if not s:
+        return ""
+    s = s.strip()
+    # 去掉常見標點/符號：句號 逗號 括號 連字號 底線 斜線 引號 等
+    s = re.sub(r"[\s.,()\[\]{}\-_/\\'\"‘’“”，。、（）【】]+", "", s)
+    return s.lower()
 
-    for m in re.finditer(r'href=["\']([^"\']+)["\']', html, flags=re.I):
-        href = m.group(1).strip()
-        if not href or href.startswith("#") or href.lower().startswith(("mailto:", "tel:", "javascript:")):
+
+def _identity_aliases(raw):
+    """支援在同一個欄位裡填多個別名/簡稱，用 '/' 或 '、' 分隔。
+    例如 other_company 填 "民都魯中華縂商會/民中總" 兩個都算數，
+    只要其中一個有出現在候選網頁裡就算命中。"""
+    if not raw:
+        return []
+    parts = re.split(r"[/、]", raw)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def build_identity_fields(other_company, activity, my_company_name, ceo_name):
+    """依優先順序（年份已經在日期比對處理，這裡不重複）：
+       公會/其他公司名字 > 活動名字 > 我方公司名字 > CEO/老闆名字
+    只回傳使用者這次實際有填的欄位，格式 [(label, raw, normalized), ...]。"""
+    order = [
+        ("other_company", other_company),
+        ("activity", activity),
+        ("my_company", my_company_name),
+        ("ceo", ceo_name),
+    ]
+    fields = []
+    for label, val in order:
+        val = (val or "").strip()
+        if not val:
             continue
-        if href.startswith("//"):
-            href = "https:" + href
-        elif href.startswith("/"):
-            href = base_domain + href
-        elif not href.lower().startswith(("http://", "https://")):
-            continue
-        if not href.startswith(base_domain):
-            continue
-        if re.search(r"\.(jpg|jpeg|png|gif|pdf|zip|css|js)(\?|$)", href, flags=re.I):
-            continue
-        href = href.split("#")[0]
-        if href in seen or href == base_url:
-            continue
-        seen.add(href)
-        links.append(href)
-    return links
+        # 同一欄位可能填了多個別名/簡稱（用 / 或 、分隔），
+        # 每個別名各自正規化，只要其中一個命中就算這個欄位命中
+        aliases = _identity_aliases(val) or [val]
+        norms = [n for n in (_normalize_for_match(a) for a in aliases) if n]
+        if norms:
+            fields.append((label, val, norms))
+    return fields
 
 
-def looks_like_listing_page(url, links):
-    """粗略判斷這頁是不是「目錄/列表頁」而不是單篇文章頁。"""
-    if any(hint in url.lower() for hint in LISTING_URL_HINTS):
-        return True
-    # 單篇文章頁通常不會有幾十個站內連結；列表頁常常會有一堆文章連結
-    return len(links) >= 15
+# ---------------- 日期分類邏輯 ----------------
 
+def _classify_date_tier(candidate, page_text, meta_dates, start_dt, end_dt, is_range, combined_text):
+    """回傳 (date_tier, where)。date_tier 為 None 代表日期完全對不上，直接移除。
 
-def rank_links_by_relevance(links, year):
-    """把網址裡有出現目標年份的連結排前面（比較可能是該年份的文章）。"""
-    year_str = str(year)
-    with_year = [l for l in links if year_str in l]
-    without_year = [l for l in links if year_str not in l]
-    return with_year + without_year
-
-
-
-# ---------------- date verification ----------------
-
-def verify_date(candidate, start_dt, end_dt, is_range=False, _depth=0):
-    """比對候選結果裡有沒有出現符合的日期。
-
-    - 如果是「日期範圍」(is_range=True，使用者有填 start date 和 end date)：
-      只認範圍內的日期，不額外往前後擴充。
-    - 如果是「單一日期」(is_range=False)：
-      因為報導刊出日可能跟活動日期差個幾天，所以會把
-      SINGLE_DATE_MATCH_WINDOW_DAYS 天前後也一併視為符合。
-    - 如果這頁其實是「目錄/列表頁」(例如 news_2018 這種年份文章列表)，
-      本身通常不會有完整日期文字，會再往下點進頁面裡的連結，
-      逐一檢查是不是有符合日期的文章（最多檢查 MAX_LISTING_LINKS_TO_CHECK 篇，
-      且只往下鑽一層，避免無止盡地爬）。
+    tier 信心排序（高到低）：
+      exact              -> 命中精準日期字串
+      broad-month        -> 內文抓到日期，年份+月份都對得上
+      broad-month-noyear -> 內文抓到「幾月幾日」但沒年份，月份對得上
+      broad-year         -> 只有年份對得上
+    年份對不上的候選一律不會進到任何 tier（等同移除，對應「年份」優先序最高）。
     """
     if is_range:
         window_start, window_end = start_dt, end_dt
@@ -417,52 +514,101 @@ def verify_date(candidate, start_dt, end_dt, is_range=False, _depth=0):
         window_start = start_dt - timedelta(days=SINGLE_DATE_MATCH_WINDOW_DAYS)
         window_end = end_dt + timedelta(days=SINGLE_DATE_MATCH_WINDOW_DAYS)
 
-    variants = date_variants_range(window_start, window_end)
-
-    if text_has_exact_date(candidate["title"], variants):
-        return True, "title"
-    if text_has_exact_date(candidate["snippet"], variants):
-        return True, "snippet"
-    if text_has_exact_date(candidate["link"], variants):
-        return True, "url"
-
-    page_text, meta_dates, html = fetch_page_text(candidate["link"])
-
+    # ---- tier: exact ----
+    exact_variants = date_variants_range(window_start, window_end)
+    for field, label in (
+        (candidate.get("title", ""), "title"),
+        (candidate.get("snippet", ""), "snippet"),
+        (candidate.get("link", ""), "url"),
+    ):
+        if text_has_exact_date(field, exact_variants):
+            return "exact", label
     for md in meta_dates:
-        if text_has_exact_date(md, variants):
-            return True, "meta"
+        if text_has_exact_date(md, exact_variants):
+            return "exact", "meta"
+    if text_has_exact_date(page_text, exact_variants):
+        return "exact", "content"
 
-    if text_has_exact_date(page_text, variants):
-        return True, "content"
+    # ---- tier: broad-month / broad-month-noyear / broad-year ----
+    target_years = set()
+    target_yms = set()
+    d = window_start
+    while d <= window_end:
+        target_years.add(d.year)
+        target_yms.add((d.year, d.month))
+        d += timedelta(days=1)
 
-    if _depth == 0 and html:
-        links = extract_same_site_links(html, candidate["link"])
-        if looks_like_listing_page(candidate["link"], links):
-            ranked = rank_links_by_relevance(links, start_dt.year)
-            to_check = ranked[:MAX_LISTING_LINKS_TO_CHECK]
-            print(f"     [目錄頁] {candidate['link']} 像是列表頁，往下檢查 {len(to_check)} 個連結...")
-            for sub_link in to_check:
-                sub_candidate = {"title": "", "snippet": "", "link": sub_link}
-                matched, where = verify_date(
-                    sub_candidate, start_dt, end_dt, is_range=is_range, _depth=1
-                )
-                if matched:
-                    candidate["link"] = sub_link  # 把命中的實際文章連結換上去
-                    return True, f"listing->{where}"
+    tokens = extract_dates_from_text(combined_text)
 
-    return False, None
+    # 年份對不上的 token 直接忽略（等於「yy 不一樣就移除」）
+    valid_tokens = [tok for tok in tokens if tok[0] is None or tok[0] in target_years]
+
+    target_months = {mo for (_, mo) in target_yms}
+
+    if any(y is not None and mo is not None and (y, mo) in target_yms for (y, mo, d_) in valid_tokens):
+        return "broad-month", "content"
+
+    if any(y is None and mo in target_months for (y, mo, d_) in valid_tokens):
+        return "broad-month-noyear", "content"
+
+    if any(y is not None and y in target_years for (y, mo, d_) in valid_tokens):
+        return "broad-year", "content"
+
+    return None, None
+
+
+def classify_candidate(candidate, page_text, meta_dates, start_dt, end_dt, is_range,
+                        other_company="", activity="", my_company_name="", ceo_name=""):
+    """把「日期對得上」跟「資料吻合度」兩層都過濾過，才算真的抓到。
+
+    現在的情況是：只靠日期比對太鬆，時間對上但內容其實毫不相關的網頁也會被抓進來。
+    所以這裡多加一層 -- 候選網頁的標題/摘要/網址/meta/內文，必須至少出現使用者這次
+    有填的其中一項辨識資料（優先序：公會/其他公司名字 > 活動名字 > 我方公司名字 >
+    CEO/老闆名字），日期對上但完全沒提到任何一項的，視為雜訊直接移除。
+    如果使用者這次完全沒填任何辨識資料（只有日期），就維持只用日期分類。
+
+    回傳 (date_tier, identity_label, where)：
+      date_tier / identity_label 任一為 None 都代表這篇被移除。
+    """
+    combined_text = " ".join([
+        candidate.get("title", "") or "",
+        candidate.get("snippet", "") or "",
+        candidate.get("link", "") or "",
+        " ".join(meta_dates),
+        page_text or "",
+    ])
+
+    date_tier, where = _classify_date_tier(
+        candidate, page_text, meta_dates, start_dt, end_dt, is_range, combined_text
+    )
+    if date_tier is None:
+        return None, None, None, "date-not-matched"
+
+    identity_fields = build_identity_fields(other_company, activity, my_company_name, ceo_name)
+    if not identity_fields:
+        # 這次沒填任何辨識資料，只能靠日期，維持原本邏輯，不因為新過濾層而移除
+        return date_tier, None, where, None
+
+    combined_norm = _normalize_for_match(combined_text)
+    matched_label = None
+    for label, raw, norms in identity_fields:
+        if any(n in combined_norm for n in norms):
+            matched_label = label
+            break
+
+    if matched_label is None:
+        # 日期雖然對上，但完全沒有出現任何一項你填的辨識資料 -> 判定為雜訊，移除
+        # 附上這次實際檢查過的欄位，方便你比對「是不是名稱寫法不一樣」
+        checked = "; ".join(f"{IDENTITY_LABEL_ZH.get(l, l)}=\"{raw}\"" for l, raw, _ in identity_fields)
+        return None, None, None, f"date-ok-but-no-identity-match (checked: {checked})"
+
+    return date_tier, matched_label, where, None
 
 
 # ---------------- main pipeline ----------------
 
 def search_event(date_raw, my_company_name, activity="", other_company=None,
-                  extra_keyword="", progress_cb=None):
-    """跟 auto_search.py 的 search_event 邏輯相同，多了：
-       - my_company_name / extra_keyword 兩個參數
-       - progress_cb(event_type, payload_dict) callback，
-         每個關鍵步驟都會呼叫一次，讓網頁可以即時顯示進度。
-    """
-
+                  extra_keyword="", ceo_name="", progress_cb=None):
     def emit(event_type, **payload):
         if progress_cb:
             try:
@@ -481,7 +627,10 @@ def search_event(date_raw, my_company_name, activity="", other_company=None,
         print(f"--- {msg} ---")
         emit("log", message=msg)
 
-    queries = build_queries(start_dt, end_dt, activity, other_company, my_company_name, extra_keyword)
+    queries, subject, mode = build_queries(
+        start_dt, end_dt, activity, other_company, my_company_name, extra_keyword
+    )
+    emit("log", message=f"[subject] ({mode}) {subject}")
 
     all_candidates = []
     seen_links = set()
@@ -506,14 +655,31 @@ def search_event(date_raw, my_company_name, activity="", other_company=None,
         emit("query_result", label=label, raw=len(batch), new=new, total=len(all_candidates))
 
     emit("candidates_done", total=len(all_candidates))
-    print(f"--- {len(all_candidates)} unique candidates total, verifying exact date one by one ---")
+    print(f"--- {len(all_candidates)} unique candidates total, classifying one by one ---")
+
+    DATE_TIER_RANK = {"exact": 0, "broad-month": 1, "broad-month-noyear": 2, "broad-year": 3}
+    IDENTITY_RANK = {label: i for i, label in enumerate(IDENTITY_PRIORITY)}
 
     caught = []
     for i, c in enumerate(all_candidates, 1):
-        matched, where = verify_date(c, start_dt, end_dt, is_range=is_range)
-        tag = f"CATCH ({where})" if matched else "PASS"
+        page_text, meta_dates = fetch_page_text(c["link"])
+        date_tier, identity_label, where, remove_reason = classify_candidate(
+            c, page_text, meta_dates, start_dt, end_dt, is_range=is_range,
+            other_company=other_company, activity=activity,
+            my_company_name=my_company_name, ceo_name=ceo_name,
+        )
+        if date_tier:
+            id_desc = IDENTITY_LABEL_ZH.get(identity_label, "僅日期(未填辨識資料)")
+            tag = f"CATCH ({date_tier} / {id_desc})"
+        elif remove_reason == "date-not-matched":
+            tag = "REMOVED (日期對不上)"
+        else:
+            tag = f"REMOVED ({remove_reason})"
         print(f"[{i}/{len(all_candidates)}] {tag} - {c['title'][:60]}")
-        if matched:
+        if date_tier:
+            c["date_tier"] = date_tier
+            c["identity_match"] = identity_label
+            c["tier"] = f"{date_tier}+{identity_label}" if identity_label else date_tier
             c["matched_in"] = where
             caught.append(c)
         emit(
@@ -521,108 +687,102 @@ def search_event(date_raw, my_company_name, activity="", other_company=None,
             index=i,
             total=len(all_candidates),
             matched_so_far=len(caught),
-            status="CATCH" if matched else "PASS",
+            status="CATCH" if date_tier else "REMOVED",
+            date_tier=date_tier,
+            identity_match=identity_label,
             where=where,
             title=c["title"],
         )
 
+    caught.sort(key=lambda c: (
+        DATE_TIER_RANK.get(c.get("date_tier"), 99),
+        IDENTITY_RANK.get(c.get("identity_match"), 99),
+    ))
     return caught
 
 
-def sanitize_filename(name, max_len=120):
-    """把字串清乾淨成 Windows/Mac/Linux 都能用的合法檔名片段。
-    除了原本擋掉的 <>:"/\\|?* 之外，這裡再多處理：
-      - 控制字元（\\n \\t 之類複製貼上不小心帶進來的看不見字元）
-      - 結尾的空格或句點（Windows 會直接拒絕這種檔名，是 Errno 22 常見原因）
-      - 過長的片段（避免整個路徑超過 Windows 260 字元限制）
-    """
-    if not name:
-        return ""
-    name = re.sub(r'[<>:"/\\|?*]', "_", name)
-    name = re.sub(r"[\x00-\x1f]", "", name)  # 控制字元
-    name = name.strip().rstrip(" .")  # 結尾空格/句點
-    if len(name) > max_len:
-        name = name[:max_len].rstrip(" .")
-    return name
-
-
-def save_to_txt(date_raw, activity, other_company, my_company_name, extra_keyword, results):
-    """跟 auto_search.py 的 save_to_txt 邏輯相同，只是輸出資料夾改用 OUTPUT_DIR
-    （預設放在這個檔案旁邊的 output 資料夾，可用環境變數 OUTPUT_DIR 改成你原本的路徑）。"""
+def save_to_txt(date_raw, activity, other_company, my_company_name, extra_keyword, results, ceo_name=""):
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
         print(f"建立目錄: {OUTPUT_DIR}")
 
-    act_name = sanitize_filename(activity) or "NA"
-    co_name = sanitize_filename(other_company) or "Company"
-    date_part = sanitize_filename(date_raw) or "date"
+    act_name = activity if activity.strip() else "NA"
+    co_name = other_company if other_company.strip() else "Company"
 
-    filename = f"{date_part}_{act_name}_{co_name}.txt"
+    filename = f"{date_raw}_{act_name}_{co_name}.txt"
+    invalid_chars = '<>:"/\\|?*'
+    for char in invalid_chars:
+        filename = filename.replace(char, "_")
+
+    stem, ext = os.path.splitext(filename)
+    stem = stem.rstrip(" .")
+    if not stem:
+        stem = "untitled"
+    RESERVED_NAMES = {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }
+    if stem.upper() in RESERVED_NAMES:
+        stem = f"_{stem}"
+    filename = stem + ext
+
+    MAX_FILENAME_LEN = 150
+    if len(filename) > MAX_FILENAME_LEN:
+        stem, ext = os.path.splitext(filename)
+        filename = stem[: MAX_FILENAME_LEN - len(ext)] + ext
+
     full_path = os.path.join(OUTPUT_DIR, filename)
 
-    try:
-        start_dt, end_dt, is_range = parse_date_range(date_raw)
-        if not start_dt:
-            formatted_date = date_raw
-        elif is_range:
-            formatted_date = f"{start_dt.strftime('%d %B %Y')} - {end_dt.strftime('%d %B %Y')}"
+    start_dt, end_dt, is_range = parse_date_range(date_raw)
+    if not start_dt:
+        formatted_date = date_raw
+    elif is_range:
+        formatted_date = f"{start_dt.strftime('%d %B %Y')} - {end_dt.strftime('%d %B %Y')}"
+    else:
+        formatted_date = start_dt.strftime("%d %B %Y")
+
+    DATE_TIER_LABEL = {
+        "exact": "精準日期命中",
+        "broad-month": "廣泛比對(年+月吻合)",
+        "broad-month-noyear": "廣泛比對(月吻合,無年份)",
+        "broad-year": "廣泛比對(僅年份吻合)",
+    }
+
+    with open(full_path, "w", encoding="utf-8") as f:
+        f.write("================================================\n")
+        f.write(f"TARGET DATE: {date_raw} -> {formatted_date}\n")
+        f.write(f"MY COMPANY: {my_company_name}\n")
+        f.write(f"OTHER COMPANY (公會/其他公司): {other_company or 'N/A'}\n")
+        f.write(f"ACTIVITY (活動名字): {activity or 'N/A'}\n")
+        f.write(f"CEO/老闆名字: {ceo_name or 'N/A'}\n")
+        f.write(f"EXTRA KEYWORD: {extra_keyword or 'N/A'}\n")
+        f.write(f"FOUND AT: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("優先序: 年份 > 公會/其他公司名字 > 活動名字 > 公司名字 > CEO/老闆名字\n")
+        f.write("------------------------------------------------\n")
+
+        if not results:
+            f.write("No matches found.\n")
         else:
-            formatted_date = start_dt.strftime("%d %B %Y")
+            for i, r in enumerate(results, 1):
+                date_label = DATE_TIER_LABEL.get(r.get("date_tier"), r.get("date_tier", ""))
+                id_label = IDENTITY_LABEL_ZH.get(r.get("identity_match"), "僅日期(未填辨識資料)")
+                f.write(f"{i}. [{date_label} / 命中: {id_label}] {r['title']}\n")
+                f.write(f"   URL: {r['link']}\n")
+                f.write(f"   MATCHED IN: {r.get('matched_in')}\n")
+                if r.get("snippet"):
+                    f.write(f"   SNIPPET: {r['snippet']}\n")
+                f.write("\n")
 
-        with open(full_path, "w", encoding="utf-8") as f:
-            f.write("================================================\n")
-            f.write(f"TARGET DATE: {date_raw} -> {formatted_date}\n")
-            f.write(f"MY COMPANY: {my_company_name}\n")
-            f.write(f"OTHER COMPANY: {other_company or 'N/A'}\n")
-            f.write(f"ACTIVITY: {activity or 'N/A'}\n")
-            f.write(f"EXTRA KEYWORD: {extra_keyword or 'N/A'}\n")
-            f.write(f"FOUND AT: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("------------------------------------------------\n")
+        f.write(f"TOTAL MATCHES: {len(results)}\n")
+        f.write("================================================\n")
 
-            if not results:
-                f.write("No exact-date matches found.\n")
-            else:
-                for i, r in enumerate(results, 1):
-                    f.write(f"{i}. {r['title']}\n")
-                    f.write(f"   URL: {r['link']}\n")
-                    f.write(f"   MATCHED IN: {r.get('matched_in')}\n")
-                    if r.get("snippet"):
-                        f.write(f"   SNIPPET: {r['snippet']}\n")
-                    f.write("\n")
-
-            f.write(f"TOTAL EXACT MATCHES: {len(results)}\n")
-            f.write("================================================\n")
-
-        print(f"\n[成功] 結果已儲存至: {full_path}")
-        return full_path
-
-    except OSError as e:
-        # 存檔失敗（例如檔名/路徑不合法、太長），印出詳細資訊方便除錯，
-        # 並改用一個保證合法的保底檔名重試一次，不讓整個任務直接掛掉。
-        print(f"[存檔失敗] path={full_path!r} error={e}")
-        fallback_name = f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        fallback_path = os.path.join(OUTPUT_DIR, fallback_name)
-        print(f"[改用保底檔名重試] {fallback_path}")
-        with open(fallback_path, "w", encoding="utf-8") as f:
-            f.write(f"[原本存檔失敗，錯誤: {e}]\n")
-            f.write(f"[原本檔名: {filename}]\n\n")
-            f.write(f"TARGET DATE: {date_raw}\n")
-            f.write(f"MY COMPANY: {my_company_name}\n")
-            f.write(f"OTHER COMPANY: {other_company or 'N/A'}\n")
-            f.write(f"ACTIVITY: {activity or 'N/A'}\n")
-            f.write(f"EXTRA KEYWORD: {extra_keyword or 'N/A'}\n")
-            f.write("------------------------------------------------\n")
-            if not results:
-                f.write("No exact-date matches found.\n")
-            else:
-                for i, r in enumerate(results, 1):
-                    f.write(f"{i}. {r['title']}\n   URL: {r['link']}\n")
-                    f.write(f"   MATCHED IN: {r.get('matched_in')}\n\n")
-        return fallback_path
+    print(f"\n[成功] 結果已儲存至: {full_path}")
+    return full_path
 
 
 # ============================================================
-# 網頁介面（下半部：Flask + 即時進度顯示）
+# 網頁介面（Flask + 即時進度顯示，跟原本一樣，前端不用改）
 # ============================================================
 
 app = Flask(__name__)
@@ -640,6 +800,7 @@ def run_job(params):
         activity = params["activity"]
         other_company = params["other_company"]
         extra_keyword = params["extra_keyword"]
+        ceo_name = CEO_NAME
 
         def progress_cb(event_type, payload):
             job_queue.put({"type": event_type, **payload})
@@ -650,17 +811,21 @@ def run_job(params):
             activity=activity,
             other_company=other_company,
             extra_keyword=extra_keyword,
+            ceo_name=ceo_name,
             progress_cb=progress_cb,
         )
 
         saved_path = save_to_txt(
-            date_raw, activity, other_company, my_company_name, extra_keyword, results
+            date_raw, activity, other_company, my_company_name, extra_keyword, results,
+            ceo_name=ceo_name,
         )
 
         serialized = [
             {
                 "title": r["title"],
                 "link": r["link"],
+                "date_tier": r.get("date_tier"),
+                "identity_match": r.get("identity_match"),
                 "matched_in": r.get("matched_in"),
                 "snippet": r.get("snippet", ""),
             }
@@ -673,10 +838,6 @@ def run_job(params):
             "saved_path": saved_path,
         })
     except Exception as e:
-        import traceback
-        print("=== [run_job 發生錯誤，完整 traceback] ===")
-        traceback.print_exc()
-        print("==========================================")
         job_queue.put({"type": "error", "message": str(e)})
         job_queue.put({"type": "done", "count": 0, "results": [], "saved_path": None})
     finally:
@@ -715,11 +876,12 @@ def start():
     if not MY_COMPANY_NAME or MY_COMPANY_NAME == "請在這裡填入你的公司名稱":
         return jsonify({"error": "還沒在 auto_mix.py 裡設定 MY_COMPANY_NAME，請先改那一行"}), 400
     if not api_key:
-        return jsonify({"error": "找不到 API KEY，請檢查 .env 檔案裡的 STRIPE_API_KEY"}), 400
+        return jsonify({"error": "找不到 API KEY，請檢查 .env 檔案裡的 SERPER_API_KEY"}), 400
 
+    # 固定條件：date（ddmmyyyy 或 ddmmyyyy-ddmmyyyy）必填
     start_dt, _end_dt, _is_range = parse_date_range(date_raw)
     if not start_dt:
-        return jsonify({"error": f"日期格式錯誤: {date_raw}"}), 400
+        return jsonify({"error": f"日期格式錯誤，請用 ddmmyyyy 或 ddmmyyyy-ddmmyyyy: {date_raw}"}), 400
 
     with job_lock:
         if job_running:
@@ -748,9 +910,6 @@ def stream():
                 break
     return Response(gen(), mimetype="text/event-stream")
 
-
-# 網頁的 HTML/CSS/JS 拆到 templates/support.html，跟這個檔案放在一起即可
-# (auto_mix.py 跟 templates/ 資料夾要在同一層)。
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5001, debug=False)
