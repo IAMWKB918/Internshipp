@@ -13,6 +13,7 @@ from main import (
     run_pipeline,
     PipelineError,
 )
+from auto_cmsw import run_folder_name_task
 
 app = Flask(__name__)
 
@@ -214,9 +215,36 @@ def _run_batches_background(run_id, batches):
 
         start_time = STATE["progress"]["batches"][batch_index]["start_time"]
 
-        try:
-            run_pipeline(input_dir, output_dir, CONFIG_PATH)
-        except PipelineError as e:
+        # ────────────────────────────────────────────────────────
+        # 两个互不相干的工作，同时启动：
+        #   1) run_pipeline      —— main.py 的 Florence/YOLO/分类/归档 主流程
+        #   2) run_folder_name_task —— auto_cmsw.py，只抓 folder name 文字写 txt
+        # 用两条 thread 一起 start/join，达到"同时进行"而不是先后顺序执行。
+        # 两边互不 import，出错也互不拖累对方。
+        # ────────────────────────────────────────────────────────
+        batch_errors = {}
+
+        def _do_pipeline():
+            try:
+                run_pipeline(input_dir, output_dir, CONFIG_PATH)
+            except PipelineError as e:
+                batch_errors["pipeline"] = e
+
+        def _do_folder_name():
+            try:
+                run_folder_name_task(input_dir, output_dir)
+            except Exception as e:
+                batch_errors["folder_name"] = e
+
+        t_pipeline = threading.Thread(target=_do_pipeline)
+        t_name = threading.Thread(target=_do_folder_name)
+        t_pipeline.start()
+        t_name.start()
+        t_pipeline.join()
+        t_name.join()
+
+        if "pipeline" in batch_errors:
+            e = batch_errors["pipeline"]
             elapsed = round(time.time() - start_time, 1)
             msg = f"{e.step_name} 失败 (退出码 {e.returncode})"
             with PROGRESS_LOCK:
@@ -228,6 +256,10 @@ def _run_batches_background(run_id, batches):
                 b["error_message"] = msg
                 STATE["progress"]["errors"].append(f"[{input_dir.name}] {msg}")
             continue  # 这批失败了，继续跑下一批，不整个中断
+
+        if "folder_name" in batch_errors:
+            # 这一步失败不算整个 batch 失败，只是少一个 txt，记 log 就好
+            print(f"[warn] [{input_dir.name}] auto_cmsw 抓取失败: {batch_errors['folder_name']}")
 
         result = _compute_batch_result(batch_index, output_dir, media_files)
         elapsed = round(time.time() - start_time, 1)
@@ -355,4 +387,4 @@ def open_folder(batch_index, target="root"):
 if __name__ == "__main__":
     # threaded=True: /progress 轮询需要在背景 pipeline 执行绪还在跑的时候
     # 也能被同时处理，不然网页会卡住看不到进度。
-    app.run(host='127.0.0.1', port=5001, debug=True, use_reloader=False, threaded=True)
+    app.run(host='127.0.0.1', port=5000, debug=True, use_reloader=False, threaded=True)
