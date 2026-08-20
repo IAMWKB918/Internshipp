@@ -428,10 +428,6 @@ def open_folder(batch_index, target="root"):
     _open_in_file_manager(folder)
     return jsonify({"ok": True})
 
-
-# 打开 auto_cmsw 分析结果存盘的位置 (跟 pipeline 的 organized_photos 是同一个
-# 批次的 output_dir，但这边不下钻到 organized_photos 子资料夹，因为 cmsw 的东西
-# 不是放在那里面)
 @app.route("/open_cmsw_folder/<int:batch_index>")
 def open_cmsw_folder(batch_index):
     if batch_index >= len(STATE["runs"]):
