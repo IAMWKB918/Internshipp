@@ -13,7 +13,7 @@ from main import (
     run_pipeline,
     PipelineError,
 )
-from auto_cmsw import run_folder_name_task
+from auto_cmsw import run_folder_analysis
 
 app = Flask(__name__)
 
@@ -199,9 +199,68 @@ def _compute_batch_result(batch_index, output_dir, media_files):
     }
 
 
+def _run_cmsw_task(run_id, batch_index, name, input_dir, output_dir, cmsw_start):
+    """独立跑某一个 batch 的 auto_cmsw 分析 (分类 + 搜索 + 过滤)。所有 batch 的这个
+    函式会在 run 一开始就同时丢进线程池 —— 不排队、不等 pipeline，谁先跑完就先把
+    结果写回 STATE，右侧面板马上看得到。"""
+    try:
+        cmsw_result = run_folder_analysis(input_dir, output_dir)
+        cmsw_status = "error" if isinstance(cmsw_result, dict) and cmsw_result.get("error") else "done"
+    except Exception as e:
+        print(f"[warn] [{name}] auto_cmsw 分析失败: {e}")
+        cmsw_result = {"error": str(e)}
+        cmsw_status = "error"
+    with PROGRESS_LOCK:
+        if STATE["progress"]["run_id"] != run_id:
+            return
+        b = STATE["progress"]["batches"][batch_index]
+        b["cmsw"] = cmsw_result
+        b["cmsw_status"] = cmsw_status
+        b["cmsw_elapsed_seconds"] = round(time.time() - cmsw_start, 1)
+        # run_folder_analysis(input_dir, output_dir) 拿到的 output_dir 就是它落盘的地方，
+        # 存起来给 /open_cmsw_folder 用，前端才能有个按钮直接打开这个位置
+        b["cmsw_output_path"] = str(output_dir)
+
+
 def _run_batches_background(run_id, batches):
-    """在背景执行绪里依序跑每个批次的 pipeline，每跑完一个就立刻把结果写进
-    STATE["progress"]，让 /progress 轮询能马上看到 —— 不用等全部批次跑完。"""
+    """在背景执行绪里跑所有批次。两条线完全各走各的，互不排队等待：
+      - pipeline (图片分类/归档)：还是一个 folder 接一个 folder 顺序处理。
+      - auto_cmsw (分类+搜索+过滤)：不跟 pipeline 排队 —— run 一开始就把每个
+        folder 的 cmsw 全部同时丢出去背景线程，谁先跑完就先显示，不用等
+        "轮到" 第二个 folder 开始处理图片，cmsw 才跟着动。
+    """
+    # 预先把每个 batch 的 input/output 路径记好 (不用等 pipeline 真的跑到那一批)，
+    # 这样 cmsw 就算跑得比 pipeline 快很多，/open_cmsw_folder、/thumb 也不会因为
+    # STATE["runs"] 还没建好而 404。
+    with PROGRESS_LOCK:
+        if STATE["progress"]["run_id"] != run_id:
+            return
+        STATE["runs"] = [
+            {"input_dir": input_dir, "output_dir": input_dir / "output"}
+            for input_dir, _ in batches
+        ]
+
+    # ---- 所有 batch 的 cmsw 一次性同时启动，互不排队 ----
+    cmsw_threads = []
+    for batch_index, (input_dir, _media_files) in enumerate(batches):
+        output_dir = input_dir / "output"
+        cmsw_start = time.time()
+        with PROGRESS_LOCK:
+            if STATE["progress"]["run_id"] != run_id:
+                return
+            b = STATE["progress"]["batches"][batch_index]
+            b["cmsw_status"] = "running"
+            b["cmsw_start_time"] = cmsw_start
+
+        t = threading.Thread(
+            target=_run_cmsw_task,
+            args=(run_id, batch_index, input_dir.name, input_dir, output_dir, cmsw_start),
+            daemon=True,
+        )
+        t.start()
+        cmsw_threads.append(t)
+
+    # ---- pipeline (图片分类/归档) 依然一个 folder 一个 folder 顺序处理 ----
     for batch_index, (input_dir, media_files) in enumerate(batches):
         with PROGRESS_LOCK:
             if STATE["progress"]["run_id"] != run_id:
@@ -210,41 +269,11 @@ def _run_batches_background(run_id, batches):
             STATE["progress"]["batches"][batch_index]["start_time"] = time.time()
 
         output_dir = input_dir / "output"
-        with PROGRESS_LOCK:
-            STATE["runs"].append({"input_dir": input_dir, "output_dir": output_dir})
-
         start_time = STATE["progress"]["batches"][batch_index]["start_time"]
 
-        # ────────────────────────────────────────────────────────
-        # 两个互不相干的工作，同时启动：
-        #   1) run_pipeline      —— main.py 的 Florence/YOLO/分类/归档 主流程
-        #   2) run_folder_name_task —— auto_cmsw.py，只抓 folder name 文字写 txt
-        # 用两条 thread 一起 start/join，达到"同时进行"而不是先后顺序执行。
-        # 两边互不 import，出错也互不拖累对方。
-        # ────────────────────────────────────────────────────────
-        batch_errors = {}
-
-        def _do_pipeline():
-            try:
-                run_pipeline(input_dir, output_dir, CONFIG_PATH)
-            except PipelineError as e:
-                batch_errors["pipeline"] = e
-
-        def _do_folder_name():
-            try:
-                run_folder_name_task(input_dir, output_dir)
-            except Exception as e:
-                batch_errors["folder_name"] = e
-
-        t_pipeline = threading.Thread(target=_do_pipeline)
-        t_name = threading.Thread(target=_do_folder_name)
-        t_pipeline.start()
-        t_name.start()
-        t_pipeline.join()
-        t_name.join()
-
-        if "pipeline" in batch_errors:
-            e = batch_errors["pipeline"]
+        try:
+            run_pipeline(input_dir, output_dir, CONFIG_PATH)
+        except PipelineError as e:
             elapsed = round(time.time() - start_time, 1)
             msg = f"{e.step_name} 失败 (退出码 {e.returncode})"
             with PROGRESS_LOCK:
@@ -257,10 +286,6 @@ def _run_batches_background(run_id, batches):
                 STATE["progress"]["errors"].append(f"[{input_dir.name}] {msg}")
             continue  # 这批失败了，继续跑下一批，不整个中断
 
-        if "folder_name" in batch_errors:
-            # 这一步失败不算整个 batch 失败，只是少一个 txt，记 log 就好
-            print(f"[warn] [{input_dir.name}] auto_cmsw 抓取失败: {batch_errors['folder_name']}")
-
         result = _compute_batch_result(batch_index, output_dir, media_files)
         elapsed = round(time.time() - start_time, 1)
 
@@ -271,6 +296,11 @@ def _run_batches_background(run_id, batches):
             b["status"] = "done"
             b["elapsed_seconds"] = elapsed
             b.update(result)
+
+    # pipeline 全部跑完了，但 cmsw 是各自独立的背景线程，理论上早就跑完了 ——
+    # 这里 join 只是保险，确保收尾之前每一个都真的写回 STATE 了。
+    for t in cmsw_threads:
+        t.join()
 
     with PROGRESS_LOCK:
         if STATE["progress"]["run_id"] == run_id:
@@ -306,6 +336,11 @@ def run_tasks():
             "missing_files": [],
             "logs": [],
             "error_message": None,
+            "cmsw": None,           # auto_cmsw 分析结果，独立于 pipeline 完成
+            "cmsw_status": "pending",   # pending / running / done / error —— 跟左边 status 各走各的
+            "cmsw_start_time": None,
+            "cmsw_elapsed_seconds": 0,
+            "cmsw_output_path": None,  # auto_cmsw 结果存盘的位置，给 /open_cmsw_folder 用
         }
         for idx, (input_dir, media_files) in enumerate(batches)
     ]
@@ -343,10 +378,17 @@ def progress():
         }
         for b in STATE["progress"]["batches"]:
             entry = dict(b)
+            start_time = entry.get("start_time")
             # running 中的批次，elapsed 要即时算，不然轮询画面上的秒数不会跳动
-            if entry["status"] == "running" and entry.get("start_time"):
-                entry["elapsed_seconds"] = round(now - entry["start_time"], 1)
-            entry.pop("start_time", None)  # 内部用的 epoch 时间戳，不用传给前端
+            if entry["status"] == "running" and start_time:
+                entry["elapsed_seconds"] = round(now - start_time, 1)
+            # cmsw 是完全独立的一条线，自己的开始时间跟 pipeline 不一样，
+            # 跑的时候一样要即时算它自己的 elapsed
+            cmsw_start_time = entry.get("cmsw_start_time")
+            if entry.get("cmsw_status") == "running" and cmsw_start_time:
+                entry["cmsw_elapsed_seconds"] = round(now - cmsw_start_time, 1)
+            entry.pop("start_time", None)       # 内部用的 epoch 时间戳，不用传给前端
+            entry.pop("cmsw_start_time", None)
             snapshot["batches"].append(entry)
     return jsonify(snapshot)
 
@@ -362,6 +404,15 @@ def thumb(batch_index, filename):
 # 在系统文件管理器里打开某个批次的输出资料夹
 # ────────────────────────────────────────────────────────────────
 
+def _open_in_file_manager(folder):
+    if sys.platform == "win32":
+        os.startfile(str(folder))
+    elif sys.platform == "darwin":
+        os.system(f'open "{folder}"')
+    else:
+        os.system(f'xdg-open "{folder}"')
+
+
 @app.route("/open_folder/<int:batch_index>")
 @app.route("/open_folder/<int:batch_index>/<path:target>")
 def open_folder(batch_index, target="root"):
@@ -374,13 +425,23 @@ def open_folder(batch_index, target="root"):
     if not folder.exists():
         return jsonify({"ok": False, "error": "folder not found"}), 404
 
-    if sys.platform == "win32":
-        os.startfile(str(folder))
-    elif sys.platform == "darwin":
-        os.system(f'open "{folder}"')
-    else:
-        os.system(f'xdg-open "{folder}"')
+    _open_in_file_manager(folder)
+    return jsonify({"ok": True})
 
+
+# 打开 auto_cmsw 分析结果存盘的位置 (跟 pipeline 的 organized_photos 是同一个
+# 批次的 output_dir，但这边不下钻到 organized_photos 子资料夹，因为 cmsw 的东西
+# 不是放在那里面)
+@app.route("/open_cmsw_folder/<int:batch_index>")
+def open_cmsw_folder(batch_index):
+    if batch_index >= len(STATE["runs"]):
+        return jsonify({"ok": False, "error": "batch not found"}), 404
+
+    folder = STATE["runs"][batch_index]["output_dir"]
+    if not folder.exists():
+        return jsonify({"ok": False, "error": "folder not found"}), 404
+
+    _open_in_file_manager(folder)
     return jsonify({"ok": True})
 
 

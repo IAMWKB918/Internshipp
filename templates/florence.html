@@ -5,7 +5,15 @@
     <title>AI Visual Multi-Processor</title>
     <style>
         body { font-family: 'Segoe UI', sans-serif; background: #121212; color: white; margin: 40px; }
-        .container { max-width: 1000px; margin: auto; }
+        .container { max-width: 1500px; margin: auto; }
+
+        /* ---- 左右两栏：左边 multi-input classifier / 右边 auto cmsw ---- */
+        .main-layout { display: flex; gap: 20px; align-items: flex-start; }
+        .left-col { flex: 1.3; min-width: 0; }
+        .right-col { flex: 1; min-width: 0; }
+        /* 两栏标题现在都是直接摆在栏位最上面，没有任何外框/padding 垫着，
+           给同样的 margin 就能真的对齐，不用再用一边的 margin 去凑另一边的框高。 */
+        .left-col h2, .right-col h2 { margin: 0 0 15px; }
         .stage { background: #1a1a1a; height: 370px; border-radius: 15px; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; border: 2px solid #333; }
         .btn-orange { background: #fd7e14; color: white; margin-top: 15px; display: none; /* 初始隐藏 */}
         .btn-orange:hover { background: #e36a07; }
@@ -79,37 +87,79 @@
         .chart-track { flex: 1; background: #2a2a2a; border-radius: 4px; height: 18px; position: relative; overflow: hidden; }
         .chart-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; justify-content: flex-end; padding-right: 6px; box-sizing: border-box; transition: width 0.4s ease; }
         .chart-count { width: 40px; flex-shrink: 0; color: #aaa; font-size: 12px; }
+
+        /* ══════════════════════════════════════════════════════
+           右侧栏：auto_cmsw 分析结果面板。故意不整块包一层外框 ——
+           左边也是标题(h2)在外面自由摆放，只有底下每个来源各自的区块
+           (.batch-block / 这里的 .cmsw-block) 才有框，两边结构对齐，
+           标题才会真的贴齐，不会因为右边多包了一层 border+padding 往下掉。
+           ══════════════════════════════════════════════════════ */
+        .cmsw-area { margin-top: 10px; }
+        .cmsw-placeholder { color: #555; padding: 15px 0; }
+
+        .cmsw-block { background: #1e1e1e; border-radius: 10px; margin-top: 15px; overflow: hidden; }
+        .cmsw-block.pending-block { opacity: 0.5; }
+        .cmsw-header { background: #222; padding: 12px 15px; border-left: 5px solid #6f42c1; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+        .cmsw-header.running-header { border-left-color: #ffc107 !important; }
+        .cmsw-header.error-header { border-left-color: #dc3545 !important; }
+        .cmsw-name { font-weight: bold; font-size: 14px; }
+        .cmsw-sub { font-size: 11.5px; color: #999; display: block; margin-top: 3px; }
+        .cmsw-body { padding: 14px 15px; }
+        .cmsw-row { font-size: 13px; margin-bottom: 6px; color: #ccc; }
+        .cmsw-row b { color: #ddd; font-weight: 600; }
+        .cmsw-count-pill { display: inline-block; background: #262626; border-radius: 20px; padding: 4px 12px; font-size: 12px; color: #ddd; margin-top: 4px; margin-bottom: 8px; }
+        .cmsw-result-item { background: #262626; border-radius: 8px; padding: 10px 12px; margin-top: 8px; font-size: 12.5px; }
+        .cmsw-result-item a { color: #4dabf7; text-decoration: none; font-weight: 600; }
+        .cmsw-result-item a:hover { text-decoration: underline; }
+        .cmsw-result-snippet { color: #999; margin-top: 5px; line-height: 1.4; }
+        .cmsw-badge { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 10px; background: #333; color: #aaa; margin-left: 6px; vertical-align: middle; }
+        .cmsw-empty { color: #888; padding: 8px 0; font-size: 13px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>🚀 AI Multi-Input Classifier</h2>
-        
-        <div class="controls">
-            <button onclick="addFolder()" class="btn btn-blue">➕ Add Folder</button>
-            <button onclick="document.getElementById('file-input').click()" class="btn btn-purple">➕ Add Files</button>
-            <input type="file" id="file-input" multiple style="display:none" onchange="addFiles(this)">
-            
-            <div style="margin-top:20px;">
-                <b>Task Queue:</b>
-                <div id="task-container" style="margin-top:10px;"><div style="color:#555;">Waiting for tasks...</div></div>
+        <div class="main-layout">
+            <!-- ══════════════ 左栏：原本的 Multi-Input Classifier ══════════════ -->
+            <div class="left-col">
+                <h2>🚀 AI Multi-Input Classifier</h2>
+
+                <div class="controls">
+                    <button onclick="addFolder()" class="btn btn-blue">➕ Add Folder</button>
+                    <button onclick="document.getElementById('file-input').click()" class="btn btn-purple">➕ Add Files</button>
+                    <input type="file" id="file-input" multiple style="display:none" onchange="addFiles(this)">
+
+                    <div style="margin-top:20px;">
+                        <b>Task Queue:</b>
+                        <div id="task-container" style="margin-top:10px;"><div style="color:#555;">Waiting for tasks...</div></div>
+                    </div>
+                    <button id="run-btn" onclick="runAll()" class="btn btn-green" style="display: none;">🔥 Start All Tasks</button>
+                    <button id="reset-btn" onclick="resetSystem()" class="btn btn-orange" style="width: 100%; font-size: 18px; padding: 10px;">🔄 Start New Batch / Refresh</button>
+
+                </div>
+
+                <div class="stage" id="stage">
+                    <div id="status-text">Idle</div>
+                    <div class="scanner" id="scanner"></div>
+                    <img id="current-img" src="" alt="AI Preview"> <!-- 这里的 z-index 保证它会遮住 "Idle" -->
+                    <div id="result-overlay"></div>
+                </div>
+
+                <div id="error-box" class="error-box"></div>
+
+                <!-- 每个来源 (资料夹/上传文件) 各自完整跑一次，各自一个区块、各自的 output 路径 -->
+                <div id="summary-area" class="summary-area"></div>
             </div>
-            <button id="run-btn" onclick="runAll()" class="btn btn-green" style="display: none;">🔥 Start All Tasks</button>
-            <button id="reset-btn" onclick="resetSystem()" class="btn btn-orange" style="width: 100%; font-size: 18px; padding: 10px;">🔄 Start New Batch / Refresh</button>
 
+            <!-- ══════════════ 右栏：auto_cmsw 分析结果 (分类 + 搜索 + 过滤) ══════════════ -->
+            <!-- 一开始先藏起来，点了 Start All Tasks 才出现 —— 不然一进页面就看到一个空面板，太早了 -->
+            <!-- 标题不包框，跟左边一样直接摆在栏位最上面，下面结果各自一个 .cmsw-block 卡片 -->
+            <div class="right-col" id="right-col" style="display:none;">
+                <h2>🔎 Google Search</h2>
+                <div id="cmsw-area" class="cmsw-area">
+                    <div class="cmsw-placeholder">Waiting for tasks...</div>
+                </div>
+            </div>
         </div>
-
-        <div class="stage" id="stage">
-            <div id="status-text">Idle</div>
-            <div class="scanner" id="scanner"></div>
-            <img id="current-img" src="" alt="AI Preview"> <!-- 这里的 z-index 保证它会遮住 "Idle" -->
-            <div id="result-overlay"></div>
-        </div>
-
-        <div id="error-box" class="error-box"></div>
-
-        <!-- 每个来源 (资料夹/上传文件) 各自完整跑一次，各自一个区块、各自的 output 路径 -->
-        <div id="summary-area" class="summary-area"></div>
     </div>
 
     <script>
@@ -168,6 +218,8 @@
             document.getElementById('summary-area').style.display = 'none';
             document.getElementById('summary-area').innerHTML = '';
             document.getElementById('error-box').style.display = 'none';
+            document.getElementById('right-col').style.display = 'block';
+            document.getElementById('cmsw-area').innerHTML = '<div class="cmsw-placeholder">Starting…</div>';
             openMissingSet = new Set();
             animating = false;
             animationQueue = [];
@@ -327,7 +379,117 @@
                 const el = document.getElementById(`missing-list-${idx}`);
                 if (el) el.classList.add('open');
             });
+
+            renderCmswArea(batches);
         }
+
+        // ══════════════════════════════════════════════════════
+        // 右栏：auto_cmsw 分析结果渲染 (分类 + 搜索 + 过滤)，跟左边同一份 batches 数据，
+        // 每个 batch 多了一个 batch.cmsw 字段（app.py 那边 run_folder_analysis() 塞进去的）
+        // ══════════════════════════════════════════════════════
+        function renderCmswArea(batches) {
+            const area = document.getElementById('cmsw-area');
+            if (!area) return;
+
+            if (batches.length === 0) {
+                area.innerHTML = `<div class="cmsw-placeholder">Waiting for tasks...</div>`;
+                return;
+            }
+
+            let html = "";
+            batches.forEach(batch => { html += renderCmswBlock(batch); });
+            area.innerHTML = html;
+        }
+
+        // auto_cmsw 跑得比左边的图片 pipeline 快很多 (top10 搜索 + 过滤，不用等图片归档)，
+        // 所以这里完全看 batch.cmsw_status 自己的进度，不看 batch.status —— cmsw 一完成
+        // 就马上显示结果，不用等左边那个 folder 的图片全部分类完。
+        function renderCmswBlock(batch) {
+            const cmswStatus = batch.cmsw_status || 'pending';
+
+            if (cmswStatus === 'pending') {
+                return `
+                    <div class="cmsw-block pending-block">
+                        <div class="cmsw-header">
+                            <span class="cmsw-name">⏳ ${batch.name}</span>
+                            <span class="cmsw-sub">Waiting to start…</span>
+                        </div>
+                    </div>`;
+            }
+            if (cmswStatus === 'running') {
+                return `
+                    <div class="cmsw-block">
+                        <div class="cmsw-header running-header">
+                            <span class="cmsw-name pulse">⚙️ ${batch.name}</span>
+                            <span class="cmsw-sub">Analyzing… ${formatDuration(batch.cmsw_elapsed_seconds)} elapsed</span>
+                        </div>
+                    </div>`;
+            }
+            if (cmswStatus === 'error') {
+                const msg = (batch.cmsw && batch.cmsw.error) || 'Analysis failed';
+                return `
+                    <div class="cmsw-block">
+                        <div class="cmsw-header error-header">
+                            <span class="cmsw-name">❌ ${batch.name}</span>
+                            <span class="cmsw-sub">${msg}</span>
+                        </div>
+                    </div>`;
+            }
+
+            // done
+            const cmsw = batch.cmsw;
+            if (!cmsw) {
+                return `
+                    <div class="cmsw-block">
+                        <div class="cmsw-header">
+                            <span class="cmsw-name">${batch.name}</span>
+                            <span class="cmsw-sub">No CMSW data yet</span>
+                        </div>
+                    </div>`;
+            }
+            return renderCmswDone(batch.name, batch.batch_index, cmsw);
+        }
+
+        function renderCmswDone(name, batchIndex, cmsw) {
+            const kept = cmsw.kept || [];
+
+            let resultsHtml;
+            if (kept.length === 0) {
+                const msg = cmsw.search_error ? `⚠ ${cmsw.search_error}` : 'No matching results found after filtering.';
+                resultsHtml = `<div class="cmsw-empty">${msg}</div>`;
+            } else {
+                resultsHtml = kept.map(r => `
+                    <div class="cmsw-result-item">
+                        <a href="${r.url}" target="_blank" rel="noopener">${r.title || r.url}</a>
+                        <span class="cmsw-badge">${r.matched_filter || '?'}${r.matched_date ? ' · ' + r.matched_date : ''}</span>
+                        ${r.snippet ? `<div class="cmsw-result-snippet">${r.snippet}</div>` : ''}
+                    </div>`).join("");
+            }
+
+            // 过滤完还有剩下的结果，才值得点进去看存盘位置；全被过滤掉就没有档案好开了
+            const openBtnHtml = kept.length > 0
+                ? `<button onclick="openCmswFolder(${batchIndex})" style="background:#6f42c1; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; flex-shrink:0;">📂 File Location</button>`
+                : '';
+
+            return `
+                <div class="cmsw-block">
+                    <div class="cmsw-header">
+                        <div>
+                            <span class="cmsw-name">✅ ${name}</span>
+                            <span class="cmsw-sub">${cmsw.date_str || ''} · ${cmsw.category || ''}</span>
+                        </div>
+                        ${openBtnHtml}
+                    </div>
+                    <div class="cmsw-body">
+                        <div class="cmsw-row"><b>公司/组织：</b>${cmsw.company || '(无，用了硬性条件)'}</div>
+                        <div class="cmsw-row"><b>内容：</b>${cmsw.content || '(无)'}</div>
+                        <div class="cmsw-count-pill">🔍 ${cmsw.total_after_filter} / ${cmsw.total_before_filter} 条通过过滤</div>
+                        ${resultsHtml}
+                    </div>
+                </div>`;
+        }
+
+        async function openCmswFolder(batchIndex) { await fetch(`/open_cmsw_folder/${batchIndex}`); }
 
         // 跨 folder 的处理时间比较 —— 只要有 batch 开始跑(running 或 done)就会出现，实时更新
         function renderTimingChart(batches) {

@@ -557,6 +557,81 @@ def run_search_and_filter_for_folder(folder_name: str, output_dir: Path) -> Path
 
 
 # ══════════════════════════════════════════════════════════════
+# app.py 用：整合 阶段一(分类) + 阶段二/三(搜索+过滤)，一次跑完，
+# 回传一份「结构化 dict」给前端 html 显示用（不只是写 txt 而已）。
+# 不改动上面任何既有函数的行为，只是多包一层收集数据，方便 app.py 呼叫。
+# ══════════════════════════════════════════════════════════════
+def run_folder_analysis(input_dir: Path, output_dir: Path) -> dict:
+    """
+    input_dir  : 使用者选的资料夹 (跟 main.py/run_folder_name_task 用同一个)
+    output_dir : 跟 main.py 用的同一个 output_dir (input_dir / "output")
+
+    照样会写两份 txt 到 output_dir（跟原本 run_folder_name_task /
+    run_search_and_filter_for_folder 写的路径、内容完全一样），
+    额外多回传一份 dict，给 app.py 塞进 /progress 的 batch 资料里，
+    这样前端就不用再去读 txt 档，直接显示这个 dict 就好。
+    """
+    folder_name = input_dir.name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- 阶段一：分类 ----
+    dates, remainder = parse_dates(folder_name)
+    year, month, day = dates[0] if dates else (None, None, None)
+    category = classify_remainder(remainder)
+
+    if len(dates) >= 2:
+        date_str = " ~ ".join(f"{y}-{m}-{d}" for (y, m, d) in dates)
+    else:
+        date_str = f"{year or '未知'}-{month or '?'}-{day or '?'}"
+
+    # ---- 阶段二 + 三：搜索 + 过滤 ----
+    query_info = build_search_queries(year, month, remainder)
+    search_error = None
+    try:
+        results = search_multi(query_info["queries"])
+    except RuntimeError as e:
+        results = []
+        search_error = str(e)
+
+    filter_company = query_info["company"] or MY_COMPANY_NAME
+    kept = [] if search_error else filter_results(results, filter_company, dates)
+
+    search_txt_path = save_search_results(
+        folder_name, output_dir, query_info, kept,
+        filter_company=filter_company, dates=dates,
+        total_before_filter=len(results),
+    )
+
+    return {
+        "folder": folder_name,
+        "date_str": date_str,
+        "category": category,
+        "content": remainder or None,
+        "company": query_info.get("company"),
+        "rule": query_info.get("rule"),
+        "queries": query_info.get("queries") or [],
+        "filter_company": filter_company,
+        "total_before_filter": len(results),
+        "total_after_filter": len(kept),
+        "kept": [
+            {
+                "title": r.get("title"),
+                "url": r.get("url"),
+                "snippet": r.get("snippet"),
+                "matched_filter": r.get("matched_filter"),
+                "matched_date": r.get("matched_date"),
+            }
+            for r in kept
+        ],
+        "search_error": search_error,
+        "output_files": {
+            "classify_txt": str(output_dir / f"{folder_name}.txt"),
+            "search_txt": str(search_txt_path),
+        },
+    }
+
+
+# ══════════════════════════════════════════════════════════════
 # 命令行入口
 #
 # 日常用法只有一种：
