@@ -78,7 +78,7 @@
            渐层带过去，而不是纯 #000 死黑一块，看起来才像同一个页面的一部分)。
            里面放 Content Generate 的标题/说明/贴连结用的横线笔记本文字框。 ---- */
         #left-mask-screen {
-            position:absolute; top:0; left:0; width:100%; height:100%;
+            position:absolute; top:0; left:0; width:100%; height:130%;
             background: linear-gradient(160deg, #181818 0%, #1e1e1e 35%, #171717 65%, #202020 100%);
             display:none; align-items:flex-start; justify-content:center;
             z-index: 50; border-radius: 10px; padding: 30px 25px; box-sizing: border-box;
@@ -103,6 +103,23 @@
         }
         .ruled-textarea:focus { outline: none; border-color: #6f42c1; }
         .ruled-textarea::placeholder { color: #666; }
+
+        /* ---- Content Generate: 状态文字 (跑中/失败) + 结果显示区 ---- */
+        .cg-status { margin-top: 12px; font-size: 13px; color: #999; }
+        .cg-status.running { color: #ffc107; }
+        .cg-status.error { color: #ff8080; }
+
+        .cg-result-block { background: #1e1e1e; border-radius: 10px; padding: 16px 18px; margin-top: 15px; }
+        .cg-result-section { margin-bottom: 14px; }
+        .cg-result-section:last-child { margin-bottom: 0; }
+        .cg-result-label { font-size: 11.5px; color: #999; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+        .cg-result-zh { font-size: 14px; color: #eee; line-height: 1.5; }
+        .cg-result-en { font-size: 13px; color: #aaa; line-height: 1.5; margin-top: 3px; font-style: italic; }
+        .cg-result-meta-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+        .cg-result-meta-chip { background: #262626; border-radius: 20px; padding: 5px 12px; font-size: 12px; color: #ddd; }
+        .cg-result-meta-chip b { color: #6f42c1; }
+        .cg-result-source { font-size: 12px; color: #4dabf7; word-break: break-all; }
+        .cg-result-failed { font-size: 12px; color: #ff8080; margin-top: 10px; }
 
         /* ---- Stats row: Total / Classified / Missing ---- */
         .stats-row { display: flex; gap: 12px; margin-bottom: 15px; }
@@ -206,7 +223,13 @@
                         <div class="content-generate-panel">
                             <h2>📝 Content Generate</h2>
                             <p class="content-generate-desc">Pull, or copy and paste the reference link to the box below.</p>
-                            <textarea id="content-generate-link" class="ruled-textarea" placeholder="Paste reference link here..."></textarea>
+                            <textarea id="content-generate-link" class="ruled-textarea" placeholder="Paste reference link here..." oninput="onContentLinkInput()"></textarea>
+
+                            <button id="content-generate-btn" class="btn btn-purple" style="display:none; margin-top:15px;" onclick="startContentGenerate()">🚀 Start Generate</button>
+
+                            <div id="content-generate-status" class="cg-status" style="display:none;"></div>
+
+                            <div id="content-generate-result" class="cg-result-block" style="display:none;"></div>
                         </div>
                     </div>
                 </div>
@@ -289,7 +312,7 @@
             runBtn.disabled = true;
             const statusText = document.getElementById('status-text');
             statusText.style.display = 'block';
-            statusText.innerText = "Classify is stopped";
+            statusText.innerText = "Starting…";
 
             // start analysis 之后，div.controls 整个不显示，改用下面这块状态文字取代它
             document.getElementById('controls-box').style.display = 'none';
@@ -297,7 +320,7 @@
             const statusMsg = document.getElementById('classifier-status-msg');
             statusMsg.style.display = 'block';
             statusMsg.innerText = classifierStopped
-                ? 'None folder is pending for classified, its over.'
+                ? 'none of folder is pending for classify'
                 : 'image is classifing … …';
 
             document.getElementById('current-img').style.display = 'none';
@@ -627,7 +650,7 @@
 
             // 过滤完还有剩下的结果，才值得点进去看存盘位置；全被过滤掉就没有档案好开了
             const openBtnHtml = `<button onclick="openCmswFolder(${batchIndex})" style="background:#6f42c1; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; flex-shrink:0;">📂 File Location</button>`;
-            const toggleBtnHtml = `<button onclick="toggleCmswDetail(${batchIndex})" style="background:#333; color:#ddd; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; flex-shrink:0;">${isOpen ? '▲' : '▼'}</button>`;
+            const toggleBtnHtml = `<button onclick="toggleCmswDetail(${batchIndex})" style="background:#333; color:#ddd; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; flex-shrink:0;">${isOpen ? '▲ Collapse' : '▼ Expand'}</button>`;
 
             // 收纳状态下 (isOpen === false)：只留标题那一行 (含 total 数)，公司/组织、内容、
             // 结果清单这些通通不渲染，才不会占空间；展开了才把 .cmsw-body 整块画出来。
@@ -804,6 +827,105 @@
         function toggleLeftMask() {
             const mask = document.getElementById('left-mask-screen');
             mask.style.display = (mask.style.display === 'flex') ? 'none' : 'flex';
+        }
+
+        // ══════════════════════════════════════════════════════
+        // Content Generate: 贴/输入连结 -> 侦测到至少一条 http(s) 连结才让
+        // "Start Generate" 按钮出现 -> 按下去交给后端 auto_report 那套流程
+        // (抓网页内容 -> Ollama 中文抽取 -> 翻英文) -> 结果显示在下面这块区域。
+        // 存盘位置先不管，这里先专心把生成出来的句子显示出来。
+        // ══════════════════════════════════════════════════════
+        const CG_LINK_PATTERN = /https?:\/\/[^\s]+/;
+        let cgGenerating = false;
+
+        function onContentLinkInput() {
+            if (cgGenerating) return; // 跑的时候不要让按钮因为文字框变动又跳出来
+            const text = document.getElementById('content-generate-link').value;
+            const btn = document.getElementById('content-generate-btn');
+            btn.style.display = CG_LINK_PATTERN.test(text) ? 'inline-block' : 'none';
+        }
+
+        async function startContentGenerate() {
+            const text = document.getElementById('content-generate-link').value;
+            if (!CG_LINK_PATTERN.test(text)) return;
+
+            const btn = document.getElementById('content-generate-btn');
+            const statusEl = document.getElementById('content-generate-status');
+            const resultEl = document.getElementById('content-generate-result');
+
+            cgGenerating = true;
+            btn.disabled = true;
+            btn.style.display = 'none';
+            resultEl.style.display = 'none';
+            resultEl.innerHTML = '';
+            statusEl.style.display = 'block';
+            statusEl.className = 'cg-status running';
+            statusEl.innerText = '⏳ Generating… fetching sources and running the model, this can take a bit.';
+
+            try {
+                const res = await fetch('/generate_content', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ links_text: text }),
+                });
+                const data = await res.json();
+
+                if (!res.ok || !data.ok) {
+                    statusEl.className = 'cg-status error';
+                    statusEl.innerText = `❌ ${data.error || 'Generate failed.'}`;
+                } else {
+                    statusEl.style.display = 'none';
+                    renderContentGenerateResult(data.data, data.failed_links || []);
+                }
+            } catch (e) {
+                statusEl.className = 'cg-status error';
+                statusEl.innerText = `❌ ${e.message || 'Generate failed.'}`;
+            } finally {
+                cgGenerating = false;
+                btn.disabled = false;
+                onContentLinkInput(); // 跑完了，看文字框现在的内容决定按钮要不要再出现
+            }
+        }
+
+        function renderContentGenerateResult(data, failedLinks) {
+            const resultEl = document.getElementById('content-generate-result');
+            if (!data) {
+                resultEl.style.display = 'none';
+                return;
+            }
+
+            const section = (label, zh, en) => `
+                <div class="cg-result-section">
+                    <div class="cg-result-label">${label}</div>
+                    <div class="cg-result-zh">${zh || '(无)'}</div>
+                    ${en ? `<div class="cg-result-en">${en}</div>` : ''}
+                </div>`;
+
+            const metaRow = `
+                <div class="cg-result-meta-row">
+                    <span class="cg-result-meta-chip"><b>Category</b> ${data.category || '-'}</span>
+                    <span class="cg-result-meta-chip"><b>Year</b> ${data.related_year || '-'}</span>
+                    <span class="cg-result-meta-chip"><b>Date</b> ${data.acquisition_date || '-'}</span>
+                </div>`;
+
+            const failedHtml = failedLinks.length
+                ? `<div class="cg-result-failed">⚠ ${failedLinks.length} link(s) could not be fetched: ${failedLinks.join(', ')}</div>`
+                : '';
+
+            resultEl.innerHTML = `
+                ${metaRow}
+                ${section('Name', data.name_zh, data.name_en)}
+                ${section('Description', data.description_zh, data.description_en)}
+                ${section('Accomplishment', data.accomplishment_zh, data.accomplishment_en)}
+                ${section('Country', data.country_zh, data.country_en)}
+                ${section('Related Industry', data.related_industry_zh, data.related_industry_en)}
+                <div class="cg-result-section">
+                    <div class="cg-result-label">Additional Source</div>
+                    <div class="cg-result-source">${data.additional_source || '(无)'}</div>
+                </div>
+                ${failedHtml}
+            `;
+            resultEl.style.display = 'block';
         }
 
         function resetSystem() {

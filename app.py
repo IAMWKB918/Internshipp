@@ -15,6 +15,7 @@ from main import (
     PipelineStopped,
 )
 from auto_cmsw import run_folder_analysis
+from auto_report import extract_links_from_text, generate_from_links
 
 app = Flask(__name__)
 
@@ -514,6 +515,29 @@ def open_cmsw_folder(batch_index):
 
     _open_in_file_manager(folder)
     return jsonify({"ok": True})
+
+
+# ────────────────────────────────────────────────────────────────
+# Content Generate (info generate 面板)：把贴进文字框的连结丢给
+# auto_report 那套 pipeline (抓网页内容 -> Ollama 中文抽取 -> 翻英文)，
+# 同步跑完直接把结果回传给前端显示。存盘位置先不管，只负责生成 + 显示。
+# ────────────────────────────────────────────────────────────────
+
+@app.route("/generate_content", methods=["POST"])
+def generate_content():
+    payload = request.get_json(force=True) or {}
+    links_text = payload.get("links_text", "")
+
+    links = extract_links_from_text(links_text)
+    if not links:
+        return jsonify({"ok": False, "error": "没有找到有效的 http(s) 连结"}), 400
+
+    try:
+        data, failed_links = generate_from_links(links)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    return jsonify({"ok": True, "data": data, "failed_links": failed_links})
 
 
 if __name__ == "__main__":

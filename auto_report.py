@@ -82,6 +82,22 @@ def load_links(path: str) -> list[str]:
         sys.exit(1)
 
     raw = p.read_text(encoding="utf-8")
+    links = extract_links_from_text(raw)
+
+    if not links:
+        print(f"[ERROR] No valid http(s) links found in {path}.")
+        sys.exit(1)
+
+    print(f"[INFO] Extracted {len(links)} URL(s) from {path}:")
+    for l in links:
+        print(f"  - {l}")
+
+    return links
+
+
+def extract_links_from_text(raw: str) -> list[str]:
+    """Same extraction logic as load_links, but works on a raw string directly
+    (e.g. text pasted into the web UI) instead of reading a file from disk."""
     url_pattern = re.compile(r'https?://[^\s\u4e00-\u9fff"\'）)]+')
     links = url_pattern.findall(raw)
 
@@ -92,14 +108,6 @@ def load_links(path: str) -> list[str]:
         if l not in seen:
             seen.add(l)
             deduped.append(l)
-
-    if not deduped:
-        print(f"[ERROR] No valid http(s) links found in {path}.")
-        sys.exit(1)
-
-    print(f"[INFO] Extracted {len(deduped)} URL(s) from {path}:")
-    for l in deduped:
-        print(f"  - {l}")
 
     return deduped
 
@@ -121,24 +129,32 @@ def fetch_article_text(url: str) -> str | None:
         return None
 
 
-def build_context(links: list[str]) -> str:
-    """Fetch all links in order and combine their text into one context block."""
+def build_context(links: list[str], exit_on_fail: bool = True):
+    """Fetch all links in order and combine their text into one context block.
+    Returns (context, failed_links). When exit_on_fail is False (web usage),
+    raises RuntimeError instead of killing the process on total failure."""
     chunks = []
+    failed_links = []
     for i, url in enumerate(links, 1):
         print(f"[{i}/{len(links)}] Fetching: {url}")
         text = fetch_article_text(url)
         if text:
             chunks.append(f"---Source {i}: {url}---\n{text}")
+        else:
+            failed_links.append(url)
 
     if not chunks:
-        print("[ERROR] All links failed to fetch. Cannot continue.")
-        sys.exit(1)
+        msg = "All links failed to fetch. Cannot continue."
+        if exit_on_fail:
+            print(f"[ERROR] {msg}")
+            sys.exit(1)
+        raise RuntimeError(msg)
 
     context = "\n\n".join(chunks)
     if len(context) > MAX_CONTEXT_CHARS:
         print(f"[INFO] Context too long ({len(context)} chars), truncating to {MAX_CONTEXT_CHARS}")
         context = context[:MAX_CONTEXT_CHARS]
-    return context
+    return context, failed_links
 
 
 def build_zh_prompt(company: str, ceo_name: str, context: str) -> str:
@@ -215,28 +231,36 @@ def call_ollama(prompt: str, schema: dict) -> str:
     return resp.json()["response"]
 
 
-def parse_json_output(raw: str, raw_debug_file: Path) -> dict:
+def parse_json_output(raw: str, raw_debug_file: Path, exit_on_fail: bool = True) -> dict:
     """Parse a model response into a dict. Saves the raw response to disk first
-    so nothing is lost if parsing fails."""
+    so nothing is lost if parsing fails. When exit_on_fail is False (web usage),
+    raises RuntimeError instead of killing the process."""
     raw_debug_file.write_text(raw, encoding="utf-8")
     cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
     cleaned = re.sub(r"```json|```", "", cleaned).strip()
     start = cleaned.find("{")
     end = cleaned.rfind("}")
     if start == -1 or end == -1:
-        print(f"[WARNING] Could not find JSON in model output. See {raw_debug_file}")
-        sys.exit(1)
+        msg = f"Could not find JSON in model output. See {raw_debug_file}"
+        if exit_on_fail:
+            print(f"[WARNING] {msg}")
+            sys.exit(1)
+        raise RuntimeError(msg)
     json_str = cleaned[start : end + 1]
     try:
         return json.loads(json_str)
     except json.JSONDecodeError as e:
-        print(f"[ERROR] JSON parsing failed: {e}. See {raw_debug_file}")
-        sys.exit(1)
+        msg = f"JSON parsing failed: {e}. See {raw_debug_file}"
+        if exit_on_fail:
+            print(f"[ERROR] {msg}")
+            sys.exit(1)
+        raise RuntimeError(msg)
 
 
-def save_results(zh_data: dict, en_data: dict):
-    """Merge the Chinese and English passes and save output.json / output.txt."""
-    data = {
+def merge_results(zh_data: dict, en_data: dict) -> dict:
+    """Merge the Chinese and English passes into one flat dict — shared by
+    save_results() (CLI, writes files) and generate_from_links() (web, no file I/O)."""
+    return {
         "name_zh": zh_data.get("name", ""),
         "name_en": en_data.get("name_en", ""),
         "category": zh_data.get("category", ""),
@@ -252,6 +276,11 @@ def save_results(zh_data: dict, en_data: dict):
         "additional_source": zh_data.get("additional_source", ""),
         "acquisition_date": zh_data.get("acquisition_date", ""),
     }
+
+
+def save_results(zh_data: dict, en_data: dict):
+    """Merge the Chinese and English passes and save output.json / output.txt."""
+    data = merge_results(zh_data, en_data)
 
     OUTPUT_JSON.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -292,9 +321,32 @@ def save_results(zh_data: dict, en_data: dict):
     print(f"[DONE] Output written to: {OUTPUT_TXT}")
 
 
+def generate_from_links(links: list[str]) -> tuple[dict, list[str]]:
+    """Web-usage entry point: run the exact same two-pass (zh extract -> en translate)
+    pipeline as main(), but on an in-memory list of links instead of links.txt, and
+    without writing output.json/output.txt — the caller decides what to do with the
+    result (e.g. just display it). Raises RuntimeError on failure instead of exiting
+    the process, since this runs inside a Flask request. Returns (data, failed_links)."""
+    if not links:
+        raise RuntimeError("No links provided.")
+
+    context, failed_links = build_context(links, exit_on_fail=False)
+
+    zh_prompt = build_zh_prompt(COMPANY_NAME, CEO_NAME, context)
+    zh_raw = call_ollama(zh_prompt, ZH_SCHEMA)
+    zh_data = parse_json_output(zh_raw, RAW_ZH_FILE, exit_on_fail=False)
+
+    en_prompt = build_en_prompt(zh_data)
+    en_raw = call_ollama(en_prompt, EN_SCHEMA)
+    en_data = parse_json_output(en_raw, RAW_EN_FILE, exit_on_fail=False)
+
+    data = merge_results(zh_data, en_data)
+    return data, failed_links
+
+
 def main():
     links = load_links(LINKS_FILE)
-    context = build_context(links)
+    context, _failed_links = build_context(links)
 
     print(f"\n[STEP 1/2] Extracting content in Simplified Chinese using {OLLAMA_MODEL} ...")
     zh_prompt = build_zh_prompt(COMPANY_NAME, CEO_NAME, context)
