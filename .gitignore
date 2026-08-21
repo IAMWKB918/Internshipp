@@ -1,10 +1,3 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
-1daily.txt
-2current problem.txt
-3tools.txt
-4autosystemsolution.txt
-dataset.py
 filing_image.py
 ocr_engine.py
 package-lock.json
@@ -12,26 +5,16 @@ package.json
 process_log.json
 processor.js
 __pycache__/csv.cpython-311.pyc
-animal/
 node_modules/
-invoice_input/
 static/
-5pingip detail.txt
-0tomorrowplan.txt
 output/
 __pycache__/main.cpython-311.pyc
-_uploads_temp/
-paddle_results.json
 2007.06.14 -  拿督张仕国创业50周年纪念/
 2025.03.14-2025.03.18-林梦福州公会-316庆典/
 2025.06.22-诗巫盆栽协会/
+2025.10.18-世福-武夷山/
+2017.01.21 世福理事-川杨晚宴/
 input/
-output.json
-output.txt
-links_found.txt
 input2/
 .env
-raw_model_output_en.txt
-raw_model_output_zh.txt
-2025.10.18-世福-武夷山
-2017.01.21 世福理事-川杨晚宴
+links.txt
