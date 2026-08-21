@@ -125,9 +125,6 @@
 
                 <div class="controls">
                     <button onclick="addFolder()" class="btn btn-blue">➕ Add Folder</button>
-                    <button onclick="document.getElementById('file-input').click()" class="btn btn-purple">➕ Add Files</button>
-                    <input type="file" id="file-input" multiple style="display:none" onchange="addFiles(this)">
-
                     <div style="margin-top:20px;">
                         <b>Task Queue:</b>
                         <div id="task-container" style="margin-top:10px;"><div style="color:#555;">Waiting for tasks...</div></div>
@@ -172,16 +169,6 @@
                 taskQueue.push({ type: 'folder', path: data.path, name: data.path.split(/[\\/]/).pop() });
                 renderTasks();
             }
-        }
-
-        async function addFiles(input) {
-            if(input.files.length === 0) return;
-            const formData = new FormData();
-            for(let f of input.files) { formData.append('files[]', f); }
-            const res = await fetch('/upload_temp', { method: 'POST', body: formData });
-            const data = await res.json();
-            data.paths.forEach(p => { taskQueue.push({ type: 'file', path: p, name: p.split(/[\\/]/).pop() }); });
-            renderTasks();
         }
 
         function renderTasks() {
