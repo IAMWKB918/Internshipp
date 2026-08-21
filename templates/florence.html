@@ -52,7 +52,57 @@
         .card { background: #333; padding: 15px; border-radius: 8px; text-align: center; border-bottom: 4px solid #007bff; }
         .card button { margin-top: 8px; background: #444; color: #ddd; border: none; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
         .card button:hover { background: #555; }
+        /* ---- Add Folder (左上) / Stop (右上) 同一行 ---- */
+        .controls-top-row { display: flex; justify-content: space-between; align-items: center; }
+        .btn-red { background: #dc3545; color: white; margin-right: 0; }
+        .btn-red:hover { background: #bb2d3b; }
+        .btn-red:disabled { opacity: 0.5; cursor: not-allowed; }
+        #stop-btn.is-stopped { background: #28a745; }
+        #stop-btn.is-stopped:hover { background: #21883b; }
+
+        /* ---- start analysis 之后取代 .controls 位置显示的状态文字 ---- */
+        #classifier-status-msg { display:none; background:#222; padding:20px; border-radius:10px; margin-bottom:20px; text-align:center; color:#ccc; font-size:15px; }
+
+        #reset-btn { margin-bottom: 20px; }
+
         #result-overlay { position:absolute; bottom:20px; background:rgba(0,0,0,0.85); padding:12px; border-radius:5px; display:none; z-index: 20; }
+
+        /* ---- info generate 按钮：放在右栏 "Google Search" 标题右上角 ---- */
+        .right-col-header { display:flex; justify-content:space-between; align-items:center; margin:0 0 15px; }
+        .right-col-header h2 { margin:0; }
+        #info-generate-btn { background:#6f42c1; color:white; display:none; padding:8px 14px; font-size:13px; }
+        #info-generate-btn:hover { background:#5a349b; }
+
+        /* ---- 点击 info generate 后，盖住左栏 (标题+controls+stage 3 块) 的遮罩：
+           改成跟整个页面一样的深色调 (#121212/#1a1a1a/#1e1e1e/#222 这几种深灰混一起用
+           渐层带过去，而不是纯 #000 死黑一块，看起来才像同一个页面的一部分)。
+           里面放 Content Generate 的标题/说明/贴连结用的横线笔记本文字框。 ---- */
+        #left-mask-screen {
+            position:absolute; top:0; left:0; width:100%; height:100%;
+            background: linear-gradient(160deg, #181818 0%, #1e1e1e 35%, #171717 65%, #202020 100%);
+            display:none; align-items:flex-start; justify-content:center;
+            z-index: 50; border-radius: 10px; padding: 30px 25px; box-sizing: border-box;
+            overflow-y: auto;
+        }
+        .content-generate-panel { width:100%; }
+        .content-generate-panel h2 { margin: 0 0 10px; }
+        .content-generate-desc { color:#999; font-size:13px; margin: 0 0 15px; line-height:1.5; }
+
+        /* A4 带横线笔记本风格的文字框，用来贴/输入参考连结 */
+        .ruled-textarea {
+            width: 100%; min-height: 260px; box-sizing: border-box;
+            background-color: #1e1e1e;
+            background-image: linear-gradient(#2c2c2c 1px, transparent 1px);
+            background-size: 100% 28px;
+            line-height: 28px;
+            color: #e0e0e0;
+            border: 1px solid #333; border-radius: 8px;
+            padding: 4px 14px 0;
+            font-family: 'Segoe UI', sans-serif; font-size: 14px;
+            resize: vertical;
+        }
+        .ruled-textarea:focus { outline: none; border-color: #6f42c1; }
+        .ruled-textarea::placeholder { color: #666; }
 
         /* ---- Stats row: Total / Classified / Missing ---- */
         .stats-row { display: flex; gap: 12px; margin-bottom: 15px; }
@@ -104,6 +154,9 @@
         .cmsw-header.error-header { border-left-color: #dc3545 !important; }
         .cmsw-name { font-weight: bold; font-size: 14px; }
         .cmsw-sub { font-size: 11.5px; color: #999; display: block; margin-top: 3px; }
+        /* 找到几条 reference 的数字：有结果时放大、上鲜艳色，一眼就能看出这张卡片有没有料，
+           故意不用红色 (红色在这个面板里是 error/missing 的颜色，会混淆) */
+        .cmsw-total-num { font-size: 15px; font-weight: 800; color: #2dd4bf; margin: 0 2px; }
         .cmsw-body { padding: 14px 15px; }
         .cmsw-row { font-size: 13px; margin-bottom: 6px; color: #ccc; }
         .cmsw-row b { color: #ddd; font-weight: 600; }
@@ -121,24 +174,41 @@
         <div class="main-layout">
             <!-- ══════════════ 左栏：原本的 Multi-Input Classifier ══════════════ -->
             <div class="left-col">
-                <h2>🚀 AI Multi-Input Classifier</h2>
+                <!-- title + controls + stage 包一层，方便 info-generate 的遮罩精准盖住这 3 块 -->
+                <div id="left-mask-target" style="position:relative;">
+                    <h2>🚀 AI Multi-Input Classifier</h2>
 
-                <div class="controls">
-                    <button onclick="addFolder()" class="btn btn-blue">➕ Add Folder</button>
-                    <div style="margin-top:20px;">
-                        <b>Task Queue:</b>
-                        <div id="task-container" style="margin-top:10px;"><div style="color:#555;">Waiting for tasks...</div></div>
+                    <div class="controls" id="controls-box">
+                        <div class="controls-top-row">
+                            <button onclick="addFolder()" class="btn btn-blue">➕ Add Folder</button>
+                            <button id="stop-btn" onclick="stopClassifier()" class="btn btn-red" style="display: none;">⛔ Stop</button>
+                        </div>
+                        <div style="margin-top:20px;">
+                            <b>Task Queue:</b>
+                            <div id="task-container" style="margin-top:10px;"><div style="color:#555;">Waiting for tasks...</div></div>
+                        </div>
+                        <button id="run-btn" onclick="runAll()" class="btn btn-green" style="display: none;">🔥 Start All Tasks</button>
                     </div>
-                    <button id="run-btn" onclick="runAll()" class="btn btn-green" style="display: none;">🔥 Start All Tasks</button>
+
+                    <!-- start analysis 之后取代上面 .controls 的位置：依 stopClassifier() 是否按过，显示不同文字 -->
+                    <div id="classifier-status-msg"></div>
+
                     <button id="reset-btn" onclick="resetSystem()" class="btn btn-orange" style="width: 100%; font-size: 18px; padding: 10px;">🔄 Start New Batch / Refresh</button>
 
-                </div>
+                    <div class="stage" id="stage">
+                        <div id="status-text">Idle</div>
+                        <div class="scanner" id="scanner"></div>
+                        <img id="current-img" src="" alt="AI Preview"> <!-- 这里的 z-index 保证它会遮住 "Idle" -->
+                        <div id="result-overlay"></div>
+                    </div>
 
-                <div class="stage" id="stage">
-                    <div id="status-text">Idle</div>
-                    <div class="scanner" id="scanner"></div>
-                    <img id="current-img" src="" alt="AI Preview"> <!-- 这里的 z-index 保证它会遮住 "Idle" -->
-                    <div id="result-overlay"></div>
+                    <div id="left-mask-screen">
+                        <div class="content-generate-panel">
+                            <h2>📝 Content Generate</h2>
+                            <p class="content-generate-desc">Pull, or copy and paste the reference link to the box below.</p>
+                            <textarea id="content-generate-link" class="ruled-textarea" placeholder="Paste reference link here..."></textarea>
+                        </div>
+                    </div>
                 </div>
 
                 <div id="error-box" class="error-box"></div>
@@ -151,7 +221,10 @@
             <!-- 一开始先藏起来，点了 Start All Tasks 才出现 —— 不然一进页面就看到一个空面板，太早了 -->
             <!-- 标题不包框，跟左边一样直接摆在栏位最上面，下面结果各自一个 .cmsw-block 卡片 -->
             <div class="right-col" id="right-col" style="display:none;">
-                <h2>🔎 Google Search</h2>
+                <div class="right-col-header">
+                    <h2>🔎 Google Search</h2>
+                    <button id="info-generate-btn" class="btn" onclick="toggleLeftMask()">info generate</button>
+                </div>
                 <div id="cmsw-area" class="cmsw-area">
                     <div class="cmsw-placeholder">Waiting for tasks...</div>
                 </div>
@@ -161,6 +234,22 @@
 
     <script>
         let taskQueue = [];
+        let classifierStopped = false;
+
+        // 可以重复点：每点一次就在 停止 / 恢复 之间切换 —— 但这只在 Start 之前有意义
+        // (决定这次要不要跑 classify)，一旦按下 Start，这颗按钮就跟着 controls-box
+        // 一起藏起来了，不需要、也不支持跑到一半再切换。
+        function stopClassifier() {
+            classifierStopped = !classifierStopped;
+            const stopBtn = document.getElementById('stop-btn');
+            if (classifierStopped) {
+                stopBtn.innerText = '▶ Resume';
+                stopBtn.classList.add('is-stopped');
+            } else {
+                stopBtn.innerText = '⛔ Stop';
+                stopBtn.classList.remove('is-stopped');
+            }
+        }
 
         async function addFolder() {
             const res = await fetch('/select_folder', {method: 'POST'});
@@ -178,12 +267,15 @@
                 container.innerHTML += `<div class="task-item"><span><b>[${t.type.toUpperCase()}]</b> ${t.name}</span><span style="color:#ff4444;cursor:pointer" onclick="removeTask(${idx})">✖</span></div>`;
             });
             document.getElementById('run-btn').style.display = taskQueue.length > 0 ? 'block' : 'none';
+            // Stop 按钮：检测到有 input folder 才显示，全部删掉又消失
+            document.getElementById('stop-btn').style.display = taskQueue.length > 0 ? 'inline-block' : 'none';
         }
 
         function removeTask(idx) { taskQueue.splice(idx, 1); renderTasks(); }
 
         let pollTimer = null;
         let openMissingSet = new Set(); // 记住哪些 batch 的 missing 清单被展开过，轮询重绘时保留状态
+        let openCmswSet = new Set(); // 记住哪些 batch 的 Google Search 详情被展开过，轮询重绘时保留状态
         let latestProgressData = null;
 
         // ---- 扫描动画排程：哪个 folder 先跑完，就先排队播哪个 folder 的动画 ----
@@ -197,7 +289,16 @@
             runBtn.disabled = true;
             const statusText = document.getElementById('status-text');
             statusText.style.display = 'block';
-            statusText.innerText = "Starting…";
+            statusText.innerText = "Classify is stopped";
+
+            // start analysis 之后，div.controls 整个不显示，改用下面这块状态文字取代它
+            document.getElementById('controls-box').style.display = 'none';
+            document.getElementById('reset-btn').style.display = 'none';
+            const statusMsg = document.getElementById('classifier-status-msg');
+            statusMsg.style.display = 'block';
+            statusMsg.innerText = classifierStopped
+                ? 'None folder is pending for classified, its over.'
+                : 'image is classifing … …';
 
             document.getElementById('current-img').style.display = 'none';
             document.getElementById('scanner').style.display = 'none';
@@ -207,7 +308,10 @@
             document.getElementById('error-box').style.display = 'none';
             document.getElementById('right-col').style.display = 'block';
             document.getElementById('cmsw-area').innerHTML = '<div class="cmsw-placeholder">Starting…</div>';
+            document.getElementById('info-generate-btn').style.display = 'inline-block';
+            document.getElementById('left-mask-screen').style.display = 'none';
             openMissingSet = new Set();
+            openCmswSet = new Set();
             animating = false;
             animationQueue = [];
             queuedBatchIndices = new Set();
@@ -216,7 +320,7 @@
             const res = await fetch('/run_tasks', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ tasks: taskQueue })
+                body: JSON.stringify({ tasks: taskQueue, stopped: classifierStopped })
             });
             const data = await res.json();
 
@@ -244,18 +348,34 @@
         }
 
         function maybeFinalize(data) {
-            // 全部 folder 都跑完了，而且排队的扫描动画也都播完了，才真的收尾
-            if (!data.finished || animating || animationQueue.length > 0) return;
+            // 全部 folder 的资料都跑完了就可以收尾/显示 refresh —— 不用等 idle 那边的扫描动画播完，
+            // 不然最后一个 folder 700 多张图片，动画播完才给 refresh，等太久了。
+            if (!data.finished) return;
 
-            clearInterval(pollTimer);
-            pollTimer = null;
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
 
             const runBtn = document.getElementById('run-btn');
             runBtn.disabled = false;
             runBtn.style.display = 'none'; // 任务完成后隐藏"开始"按钮
             document.getElementById('reset-btn').style.display = 'block';
-            document.getElementById('status-text').style.display = 'block';
-            document.getElementById('status-text').innerText = "Batch Complete!";
+
+            const wasStopped = classifierStopped;
+
+            // status-text 还在播动画的话，animating 那边自己会管这个文字，这里不抢着改；
+            // Stop 过的话，左边 stage 状态文字也不用管，专心显示 refresh 按钮就好
+            if (!animating && !wasStopped) {
+                document.getElementById('status-text').style.display = 'block';
+                document.getElementById('status-text').innerText = "Batch Complete!";
+            }
+
+            // 这次 run 结束了：把 Stop 状态复位，下一轮预设是"没按过 stop"。
+            classifierStopped = false;
+            const stopBtn = document.getElementById('stop-btn');
+            stopBtn.innerText = '⛔ Stop';
+            stopBtn.classList.remove('is-stopped');
 
             if (data.errors && data.errors.length) {
                 const box = document.getElementById('error-box');
@@ -336,6 +456,14 @@
         function renderProgress(data) {
             const batches = data.batches || [];
 
+            // Stop 被按过：左边 classifier 全部不 function —— 不排扫描动画、不更新左边状态/卡片，
+            // 只留 classifier-status-msg 那句 "none of folder is pending for classify"。
+            // 右边 Google Search 不受影响，照样跑。
+            if (classifierStopped) {
+                renderCmswArea(batches);
+                return;
+            }
+
             queueAnimationsFor(batches);
 
             const doneOrError = batches.filter(b => b.status === 'done' || b.status === 'error').length;
@@ -347,6 +475,13 @@
                 statusText.innerText = data.finished
                     ? "Batch Complete!"
                     : `Processing… ${doneOrError}/${batches.length} folders done`;
+            }
+
+            // 全部 folder 的资料都跑完了，就把上面取代 .controls 的那句文字也更新掉，
+            // 不用等 idle 那边的动画播完 —— 跟 refresh 按钮的出现时机对齐
+            if (data.finished) {
+                const statusMsg = document.getElementById('classifier-status-msg');
+                if (statusMsg.style.display !== 'none') statusMsg.innerText = '✅ classification complete';
             }
 
             const area = document.getElementById('summary-area');
@@ -383,9 +518,33 @@
                 return;
             }
 
+            // 全部 batch 的 Google Search 都跑完了 (done 或 error，没有 pending/running 的了)
+            // 才自动依 reference 数量从多到少排序 —— 还在跑的时候不排，不然卡片会一直跳动跑不稳
+            const allCmswSettled = batches.every(b => {
+                const st = b.cmsw_status || 'pending';
+                return st === 'done' || st === 'error';
+            });
+
+            let orderedBatches = batches;
+            if (allCmswSettled) {
+                orderedBatches = [...batches].sort((a, b) => {
+                    const countA = (a.cmsw && a.cmsw.kept) ? a.cmsw.kept.length : 0;
+                    const countB = (b.cmsw && b.cmsw.kept) ? b.cmsw.kept.length : 0;
+                    return countB - countA;
+                });
+            }
+
             let html = "";
-            batches.forEach(batch => { html += renderCmswBlock(batch); });
+            orderedBatches.forEach(batch => { html += renderCmswBlock(batch); });
             area.innerHTML = html;
+        }
+
+        // 展开/收纳单一 batch 的 Google Search 详情 (公司/组织、内容、结果清单)。
+        // 只有真的有过滤后结果的卡片才有这颗按钮，见 renderCmswDone()。
+        function toggleCmswDetail(batchIndex) {
+            if (openCmswSet.has(batchIndex)) openCmswSet.delete(batchIndex);
+            else openCmswSet.add(batchIndex);
+            if (latestProgressData) renderCmswArea(latestProgressData.batches || []);
         }
 
         // auto_cmsw 跑得比左边的图片 pipeline 快很多 (top10 搜索 + 过滤，不用等图片归档)，
@@ -439,40 +598,60 @@
 
         function renderCmswDone(name, batchIndex, cmsw) {
             const kept = cmsw.kept || [];
+            const hasResults = kept.length > 0;
+            const dateCategory = [cmsw.date_str || '', cmsw.category || ''].filter(Boolean).join(' · ');
 
-            let resultsHtml;
-            if (kept.length === 0) {
-                const msg = cmsw.search_error ? `⚠ ${cmsw.search_error}` : 'No matching results found after filtering.';
-                resultsHtml = `<div class="cmsw-empty">${msg}</div>`;
-            } else {
-                resultsHtml = kept.map(r => `
-                    <div class="cmsw-result-item">
-                        <a href="${r.url}" target="_blank" rel="noopener">${r.title || r.url}</a>
-                        <span class="cmsw-badge">${r.matched_filter || '?'}${r.matched_date ? ' · ' + r.matched_date : ''}</span>
-                        ${r.snippet ? `<div class="cmsw-result-snippet">${r.snippet}</div>` : ''}
-                    </div>`).join("");
+            // 没有 reference / file location 的：不值得占空间，只留一行标题 + total : 0 result，
+            // 不显示 公司/组织、内容 这些，也不给收纳按钮 (反正没东西好收纳/展开)。
+            if (!hasResults) {
+                const emptyMsg = cmsw.search_error ? `⚠ ${cmsw.search_error}` : 'total : 0 result';
+                return `
+                    <div class="cmsw-block">
+                        <div class="cmsw-header">
+                            <div>
+                                <span class="cmsw-name">✅ ${name}</span>
+                                <span class="cmsw-sub">${dateCategory}${dateCategory ? ' · ' : ''}${emptyMsg}</span>
+                            </div>
+                        </div>
+                    </div>`;
             }
 
+            const isOpen = openCmswSet.has(batchIndex);
+
+            const resultsHtml = kept.map(r => `
+                <div class="cmsw-result-item">
+                    <a href="${r.url}" target="_blank" rel="noopener">${r.title || r.url}</a>
+                    <span class="cmsw-badge">${r.matched_filter || '?'}${r.matched_date ? ' · ' + r.matched_date : ''}</span>
+                    ${r.snippet ? `<div class="cmsw-result-snippet">${r.snippet}</div>` : ''}
+                </div>`).join("");
+
             // 过滤完还有剩下的结果，才值得点进去看存盘位置；全被过滤掉就没有档案好开了
-            const openBtnHtml = kept.length > 0
-                ? `<button onclick="openCmswFolder(${batchIndex})" style="background:#6f42c1; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; flex-shrink:0;">📂 File Location</button>`
-                : '';
+            const openBtnHtml = `<button onclick="openCmswFolder(${batchIndex})" style="background:#6f42c1; color:white; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; flex-shrink:0;">📂 File Location</button>`;
+            const toggleBtnHtml = `<button onclick="toggleCmswDetail(${batchIndex})" style="background:#333; color:#ddd; border:none; padding:5px 10px; border-radius:4px; cursor:pointer; flex-shrink:0;">${isOpen ? '▲' : '▼'}</button>`;
+
+            // 收纳状态下 (isOpen === false)：只留标题那一行 (含 total 数)，公司/组织、内容、
+            // 结果清单这些通通不渲染，才不会占空间；展开了才把 .cmsw-body 整块画出来。
+            const bodyHtml = isOpen ? `
+                    <div class="cmsw-body">
+                        <div class="cmsw-row"><b>公司/组织：</b>${cmsw.company || '(无，用了硬性条件)'}</div>
+                        <div class="cmsw-row"><b>内容：</b>${cmsw.content || '(无)'}</div>
+                        <div class="cmsw-count-pill">🔍 ${cmsw.total_after_filter} / ${cmsw.total_before_filter} 条通过过滤</div>
+                        ${resultsHtml}
+                    </div>` : '';
 
             return `
                 <div class="cmsw-block">
                     <div class="cmsw-header">
                         <div>
                             <span class="cmsw-name">✅ ${name}</span>
-                            <span class="cmsw-sub">${cmsw.date_str || ''} · ${cmsw.category || ''}</span>
+                            <span class="cmsw-sub">${dateCategory}${dateCategory ? ' · ' : ''}total : <span class="cmsw-total-num">${kept.length}</span> result</span>
                         </div>
-                        ${openBtnHtml}
+                        <div style="display:flex; gap:8px; flex-shrink:0;">
+                            ${toggleBtnHtml}
+                            ${openBtnHtml}
+                        </div>
                     </div>
-                    <div class="cmsw-body">
-                        <div class="cmsw-row"><b>公司/组织：</b>${cmsw.company || '(无，用了硬性条件)'}</div>
-                        <div class="cmsw-row"><b>内容：</b>${cmsw.content || '(无)'}</div>
-                        <div class="cmsw-count-pill">🔍 ${cmsw.total_after_filter} / ${cmsw.total_before_filter} 条通过过滤</div>
-                        ${resultsHtml}
-                    </div>
+                    ${bodyHtml}
                 </div>`;
         }
 
@@ -621,6 +800,11 @@
         }
 
         async function openLocalFolder(batchIndex, target) { await fetch(`/open_folder/${batchIndex}/${target}`); }
+
+        function toggleLeftMask() {
+            const mask = document.getElementById('left-mask-screen');
+            mask.style.display = (mask.style.display === 'flex') ? 'none' : 'flex';
+        }
 
         function resetSystem() {
     // 做法 1：直接刷新网页（最推荐，简单直接）

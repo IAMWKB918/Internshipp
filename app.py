@@ -12,6 +12,7 @@ from main import (
     DEFAULT_CONFIG,
     run_pipeline,
     PipelineError,
+    PipelineStopped,
 )
 from auto_cmsw import run_folder_analysis
 
@@ -51,6 +52,11 @@ STATE = {
         "batches": [],  # 每个批次一份 dict，随处理进度原地更新
         "errors": [],
     },
+    # 每个 run_id 各自一个 threading.Event。/stop_run 只是把当前 run_id
+    # 对应的 event set()，background 线程 (main.py 的 run_step) 轮询到之后
+    # 才会真的去砍子程式 —— 之前完全没有这个东西，"Stop" 只是前端 JS
+    # 换个按钮文字，后端的 subprocess.run() 照样跑到底。
+    "stop_event": None,
 }
 
 
@@ -222,12 +228,19 @@ def _run_cmsw_task(run_id, batch_index, name, input_dir, output_dir, cmsw_start)
         b["cmsw_output_path"] = str(output_dir)
 
 
-def _run_batches_background(run_id, batches):
+def _run_batches_background(run_id, batches, stop_event, skip_classify):
     """在背景执行绪里跑所有批次。两条线完全各走各的，互不排队等待：
       - pipeline (图片分类/归档)：还是一个 folder 接一个 folder 顺序处理。
       - auto_cmsw (分类+搜索+过滤)：不跟 pipeline 排队 —— run 一开始就把每个
         folder 的 cmsw 全部同时丢出去背景线程，谁先跑完就先显示，不用等
         "轮到" 第二个 folder 开始处理图片，cmsw 才跟着动。
+
+    skip_classify: 前端 Stop 按钮在按下 Start 之前的状态 (对应 /run_tasks
+    body 里的 "stopped")。True 的话，这次 run 完全不叫 run_pipeline —— 不会
+    启动 florence.py 去载入模型，也不会跑 YOLO/classifier/organizer，每个
+    batch 直接标成 "skipped"；右边的 auto_cmsw (Google Search) 不受影响，
+    照样跑。这是「这次要不要跑 classify」的一次性开关，不是跑到一半再中途
+    喊停 —— 后者交给 stop_event 处理 (见下面 run_pipeline 调用)。
     """
     # 预先把每个 batch 的 input/output 路径记好 (不用等 pipeline 真的跑到那一批)，
     # 这样 cmsw 就算跑得比 pipeline 快很多，/open_cmsw_folder、/thumb 也不会因为
@@ -262,6 +275,16 @@ def _run_batches_background(run_id, batches):
 
     # ---- pipeline (图片分类/归档) 依然一个 folder 一个 folder 顺序处理 ----
     for batch_index, (input_dir, media_files) in enumerate(batches):
+        # Stop 在按 Start 之前就已经被按下：这次 run 直接跳过 classify，
+        # 连 florence 模型都不会去载入。
+        if skip_classify:
+            with PROGRESS_LOCK:
+                if STATE["progress"]["run_id"] != run_id:
+                    return
+                b = STATE["progress"]["batches"][batch_index]
+                b["status"] = "skipped"
+            continue
+
         with PROGRESS_LOCK:
             if STATE["progress"]["run_id"] != run_id:
                 return  # 被新的一次 run 取代了，这个旧执行绪直接放弃
@@ -272,7 +295,20 @@ def _run_batches_background(run_id, batches):
         start_time = STATE["progress"]["batches"][batch_index]["start_time"]
 
         try:
-            run_pipeline(input_dir, output_dir, CONFIG_PATH)
+            run_pipeline(input_dir, output_dir, CONFIG_PATH, stop_event=stop_event)
+        except PipelineStopped as e:
+            # 使用者主动按 Stop 中止的，跟真的跑失败(PipelineError)分开处理，
+            # 不算错误、不进 errors 列表，前端可以显示成「已停止」而不是红字报错。
+            elapsed = round(time.time() - start_time, 1)
+            log_msg = f"[{input_dir.name}] 已停止 ({e.step_name})"
+            print(f"[info] {log_msg}")
+            with PROGRESS_LOCK:
+                if STATE["progress"]["run_id"] != run_id:
+                    return
+                b = STATE["progress"]["batches"][batch_index]
+                b["status"] = "stopped"
+                b["elapsed_seconds"] = elapsed
+            continue
         except PipelineError as e:
             elapsed = round(time.time() - start_time, 1)
             msg = f"{e.step_name} 失败 (退出码 {e.returncode})"
@@ -297,8 +333,11 @@ def _run_batches_background(run_id, batches):
             b["elapsed_seconds"] = elapsed
             b.update(result)
 
-    # pipeline 全部跑完了，但 cmsw 是各自独立的背景线程，理论上早就跑完了 ——
-    # 这里 join 只是保险，确保收尾之前每一个都真的写回 STATE 了。
+    # pipeline 全部跑完了 (或被停止了)，但 cmsw 是各自独立的背景线程，
+    # 理论上早就跑完了 —— 这里 join 只是保险，确保收尾之前每一个都真的写回 STATE 了。
+    # 注意：目前 Stop 只中止 pipeline，不会去打断已经在跑的 auto_cmsw 线程，
+    # 因为它跑的是搜索/过滤而不是本地长时间子程式，通常很快就自己结束了；
+    # 如果之后发现 cmsw 也需要能被 Stop 打断，要另外给它接 stop_event。
     for t in cmsw_threads:
         t.join()
 
@@ -314,6 +353,12 @@ def run_tasks():
     tasks = data.get("tasks", [])
     if not tasks:
         return jsonify({"error": "No tasks provided"}), 400
+
+    # 前端 Stop 按钮在按下 Start All Tasks 之前的状态：true 代表这次 run
+    # 完全不跑 classify（florence/YOLO/classifier/organizer 全部跳过），
+    # 只跑右边的 auto_cmsw。以前这个欄位有传过来，但下面完全没人读，
+    # 所以不管有没有按 Stop，florence 模型永远照样载入 —— 这里补上。
+    skip_classify = bool(data.get("stopped", False))
 
     media_exts = load_media_exts(CONFIG_PATH)
     batches = _batches_from_tasks(tasks, media_exts)
@@ -345,8 +390,11 @@ def run_tasks():
         for idx, (input_dir, media_files) in enumerate(batches)
     ]
 
+    stop_event = threading.Event()
+
     with PROGRESS_LOCK:
         STATE["runs"] = []
+        STATE["stop_event"] = stop_event
         STATE["progress"] = {
             "run_id": run_id,
             "active": True,
@@ -355,10 +403,37 @@ def run_tasks():
             "errors": [],
         }
 
-    thread = threading.Thread(target=_run_batches_background, args=(run_id, batches), daemon=True)
+    thread = threading.Thread(
+        target=_run_batches_background,
+        args=(run_id, batches, stop_event, skip_classify),
+        daemon=True,
+    )
     thread.start()
 
     return jsonify({"ok": True, "run_id": run_id, "total_batches": len(batches)})
+
+
+# ────────────────────────────────────────────────────────────────
+# 真正的「停止」：不是前端换个按钮文字就算了，而是把当前 run 的
+# stop_event set 起来。main.py 的 run_step() 每 0.3 秒会检查一次这个
+# event，抓到之后会把还在跑的子程式 terminate/kill 掉，尚未开始的
+# 步骤/batch 也不会再启动。之前完全没有这支 route，前端按 Stop 只是
+# 换按钮文字、停止画面更新，terminal 里的 subprocess 完全不受影响，
+# 会一直跑到自然结束为止。
+# ────────────────────────────────────────────────────────────────
+
+@app.route("/stop_run", methods=["POST"])
+def stop_run():
+    with PROGRESS_LOCK:
+        stop_event = STATE.get("stop_event")
+        active = STATE["progress"]["active"]
+        run_id = STATE["progress"]["run_id"]
+
+    if stop_event is None or not active:
+        return jsonify({"ok": False, "error": "没有正在跑的任务"}), 400
+
+    stop_event.set()
+    return jsonify({"ok": True, "run_id": run_id})
 
 
 # ────────────────────────────────────────────────────────────────
